@@ -3,19 +3,3 @@ services:
     image: valentemath/lemonade-stand:latest
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        - LEMONADE_VERSION=9.0.4
-    container_name: lemonade-stand
-    ports:
-      - "8000:8000"
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    volumes:
-      - /usr/local/share/huggingface:/huggingface
-    environment:
-      - LEMONADE_LLAMACPP=rocm
-      - LEMONADE_LLAMACPP_ARGS=--flash-attn on --no-mmap
-    restart: unless-stopped
-
