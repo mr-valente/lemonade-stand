@@ -14,6 +14,9 @@ RUN apt-get update && \
         fish \
         jq \
         vim \
+        # git \
+        # cmake \
+        # build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Configure fish and starship
@@ -39,7 +42,7 @@ RUN update-pciids
 ARG LEMONADE_VERSION
 ENV LEMONADE_HOST=0.0.0.0 \
     LEMONADE_PORT=8000 \
-    LEMONADE_MAX_LOADED_MODELS="1 1 1" \
+    LEMONADE_MAX_LOADED_MODELS=1 \
     LEMONADE_LLAMACPP=rocm
 
 # Download and install lemonade-server
@@ -47,6 +50,15 @@ RUN set -eux; \
     wget "https://github.com/lemonade-sdk/lemonade/releases/download/v${LEMONADE_VERSION}/lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"; \
     dpkg -i "lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"; \
     rm "lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"
+
+# # Clone and build whisper.cpp
+# RUN git clone https://github.com/ggml-org/whisper.cpp.git /opt/whisper && \
+#     cd /opt/whisper && \
+#     cmake -B build && \
+#     cmake --build build -j --config Release
+
+# # Add whisper to PATH
+# ENV PATH="/opt/whisper/build/bin:${PATH}"
 
 # Create HuggingFace cache directories
 ENV HF_HOME=/huggingface \
