@@ -14,6 +14,7 @@ RUN apt-get update && \
         fish \
         jq \
         vim \
+        fonts-katex \
         # git \
         # cmake \
         # build-essential \
@@ -47,9 +48,9 @@ ENV LEMONADE_HOST=0.0.0.0 \
 
 # Download and install lemonade-server
 RUN set -eux; \
-    wget "https://github.com/lemonade-sdk/lemonade/releases/download/v${LEMONADE_VERSION}/lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"; \
-    dpkg -i "lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"; \
-    rm "lemonade-server-minimal_${LEMONADE_VERSION}_amd64.deb"
+    wget "https://github.com/lemonade-sdk/lemonade/releases/download/v${LEMONADE_VERSION}/lemonade-server_${LEMONADE_VERSION}_amd64.deb"; \
+    dpkg -i "lemonade-server_${LEMONADE_VERSION}_amd64.deb"; \
+    rm "lemonade-server_${LEMONADE_VERSION}_amd64.deb"
 
 # # Clone and build whisper.cpp
 # RUN git clone https://github.com/ggml-org/whisper.cpp.git /opt/whisper && \
