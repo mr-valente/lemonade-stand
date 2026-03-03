@@ -1,24 +1,52 @@
-FROM ubuntu:24.04
+FROM archlinux:latest
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Enable extra-testing repo for XRT packages
+RUN printf '\n[extra-testing]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+# Install base packages, XRT, and NPU plugin
+# NOTE: The host must have amdxdna loaded for NPU access at runtime.
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm --needed \
+        base-devel \
         ca-certificates \
         curl \
         unzip \
-        libcurl4 \
-        libatomic1 \
         wget \
         pciutils \
         fish \
         jq \
         vim \
-        fonts-katex \
-        # git \
-        # cmake \
-        # build-essential \
-    && rm -rf /var/lib/apt/lists/*
+        git \
+        cmake \
+        ninja \
+        rust \
+        boost \
+        ffmpeg \
+        pkgconf \
+        openssl \
+        zlib \
+        systemd \
+        vulkan-icd-loader \
+        vulkan-radeon \
+        xrt \
+        xrt-plugin-amdxdna \
+    && pacman -Scc --noconfirm
+
+# Clone and build lemonade-server from source
+ARG LEMONADE_VERSION
+RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
+    cd /opt/lemonade && \
+    # if [ -n "$LEMONADE_VERSION" ]; then git checkout "v${LEMONADE_VERSION}"; fi && \
+    cmake --preset default && \
+    cmake --build --preset default && \
+    cmake --install build
+
+# Clone and build FastFlowLM
+RUN git clone --recursive https://github.com/FastFlowLM/FastFlowLM.git /opt/FastFlowLM && \
+    cd /opt/FastFlowLM/src && \
+    cmake --preset linux-default && \
+    cmake --build build && \
+    cmake --install build
 
 # Configure fish and starship
 RUN curl -sS https://starship.rs/install.sh | sh -s -- -y && \
@@ -39,28 +67,6 @@ COPY completions/ /root/.config/fish/completions/
 # Update PCI IDs
 RUN update-pciids
 
-# Configuration
-ARG LEMONADE_VERSION
-ENV LEMONADE_HOST=0.0.0.0 \
-    LEMONADE_PORT=8000 \
-    LEMONADE_MAX_LOADED_MODELS=1 \
-    LEMONADE_LLAMACPP=rocm
-
-# Download and install lemonade-server
-RUN set -eux; \
-    wget "https://github.com/lemonade-sdk/lemonade/releases/download/v${LEMONADE_VERSION}/lemonade-server_${LEMONADE_VERSION}_amd64.deb"; \
-    dpkg -i "lemonade-server_${LEMONADE_VERSION}_amd64.deb"; \
-    rm "lemonade-server_${LEMONADE_VERSION}_amd64.deb"
-
-# # Clone and build whisper.cpp
-# RUN git clone https://github.com/ggml-org/whisper.cpp.git /opt/whisper && \
-#     cd /opt/whisper && \
-#     cmake -B build && \
-#     cmake --build build -j --config Release
-
-# # Add whisper to PATH
-# ENV PATH="/opt/whisper/build/bin:${PATH}"
-
 # Create HuggingFace cache directories
 ENV HF_HOME=/huggingface \
     HF_HUB_CACHE=/huggingface/hub
@@ -72,4 +78,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f -s http://localhost:${LEMONADE_PORT}/api/v1/health | jq -e '.status == "ok"' > /dev/null || exit 1
 
 # Start the server and passes the max loaded models configuration
-CMD exec lemonade-server serve --max-loaded-models $LEMONADE_MAX_LOADED_MODELS
+CMD exec lemonade-server serve

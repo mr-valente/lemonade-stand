@@ -1,5 +1,5 @@
 services:
   lemonade-stand:
-    image: valentemath/lemonade-stand:latest
+    image: valentemath/lemonade-stand:latest${TAG_MOD:+-$TAG_MOD}
     build:
       context: .
