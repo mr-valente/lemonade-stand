@@ -4,6 +4,7 @@ set -e  # Exit immediately if a command exits with a non-zero status
 
 # Default values
 LEMONADE_VERSION=""
+FLM_VERSION=""
 IMAGE_NAME="valentemath/lemonade-stand"
 TAG_MOD=""
 
@@ -11,6 +12,7 @@ TAG_MOD=""
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --lemonade) LEMONADE_VERSION="$2"; shift ;;
+        --flm) FLM_VERSION="$2"; shift ;;
         --tag-mod) TAG_MOD="$2"; shift ;;
         --tag-mod=*) TAG_MOD="${1#*=}" ;;
         *) echo "Unknown parameter passed: $1"; exit 1 ;;
@@ -28,7 +30,7 @@ TAG_LATEST="latest${TAG_SUFFIX}"
 TAG_VERSION="${LEMONADE_VERSION}${TAG_SUFFIX}"
 
 echo "Building Docker image with Lemonade version $LEMONADE_VERSION..."
-sudo TAG_MOD="$TAG_MOD" docker compose build --build-arg LEMONADE_VERSION=$LEMONADE_VERSION
+sudo TAG_MOD="$TAG_MOD" docker compose build --build-arg LEMONADE_VERSION=$LEMONADE_VERSION --build-arg FLM_VERSION=$FLM_VERSION
 
 echo "Tagging images with version $TAG_VERSION..."
 sudo docker tag "$IMAGE_NAME:$TAG_LATEST" "$IMAGE_NAME:$TAG_VERSION"

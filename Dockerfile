@@ -36,14 +36,16 @@ RUN pacman -Syu --noconfirm && \
 ARG LEMONADE_VERSION
 RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
     cd /opt/lemonade && \
-    # if [ -n "$LEMONADE_VERSION" ]; then git checkout "v${LEMONADE_VERSION}"; fi && \
+    if [ -n "$LEMONADE_VERSION" ]; then git checkout "v${LEMONADE_VERSION}"; fi && \
     cmake --preset default && \
     cmake --build --preset default && \
     cmake --install build
 
 # Clone and build FastFlowLM
+ARG FLM_VERSION
 RUN git clone --recursive https://github.com/FastFlowLM/FastFlowLM.git /opt/FastFlowLM && \
     cd /opt/FastFlowLM/src && \
+    if [ -n "$FLM_VERSION" ]; then git checkout "v${FLM_VERSION}"; fi && \
     cmake --preset linux-default && \
     cmake --build build && \
     cmake --install build
