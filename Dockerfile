@@ -26,10 +26,15 @@ RUN pacman -Syu --noconfirm && \
         openssl \
         zlib \
         systemd \
+        # Vulkan packages
         vulkan-icd-loader \
         vulkan-radeon \
+        # NPU support packages
         xrt \
         xrt-plugin-amdxdna \
+        # For the nputop utility
+        python-textual \
+        python-rich \
     && pacman -Scc --noconfirm
 
 # Clone and build lemonade-server from source
@@ -65,6 +70,11 @@ COPY functions/ /root/.config/fish/functions/
 
 # Copy fish completions
 COPY completions/ /root/.config/fish/completions/
+
+# Copy nputop.py and make it executable
+COPY utils/nputop.py /opt/nputop.py
+RUN chmod +x /opt/nputop.py && \
+    ln -s /opt/nputop.py /usr/local/bin/nputop
 
 # Update PCI IDs
 RUN update-pciids
