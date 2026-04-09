@@ -26,6 +26,8 @@ RUN pacman -Syu --noconfirm && \
         openssl \
         zlib \
         systemd \
+        # For Stable Diffusion
+        numactl \
         # Vulkan packages
         vulkan-icd-loader \
         vulkan-radeon \
