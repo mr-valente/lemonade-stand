@@ -37,7 +37,7 @@ RUN pacman -Syu --noconfirm && \
         python-rich \
     && pacman -Scc --noconfirm
 
-# Clone and build lemonade-server from source
+# Clone and build lemonade with web app from source
 ARG LEMONADE_VERSION
 RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
     cd /opt/lemonade && \
@@ -89,5 +89,5 @@ RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f -s http://localhost:${LEMONADE_PORT}/api/v1/health | jq -e '.status == "ok"' > /dev/null || exit 1
 
-# Start the server and passes the max loaded models configuration
-CMD exec lemonade-server serve
+# Start the server and passes the max loaded models configuration\
+CMD exec /opt/bin/lemond
