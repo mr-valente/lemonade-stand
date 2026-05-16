@@ -20,6 +20,8 @@ RUN pacman -Syu --noconfirm && \
         cmake \
         ninja \
         rust \
+        nodejs-lts-iron \
+        npm \
         boost \
         ffmpeg \
         pkgconf \
@@ -44,29 +46,11 @@ ARG LEMONADE_VERSION
 RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
     cd /opt/lemonade && \
     if [ -n "$LEMONADE_VERSION" ]; then git checkout "v${LEMONADE_VERSION}"; fi && \
-    cmake --preset default && \
+    cmake --preset default -DBUILD_WEB_APP=ON && \
     cmake --build --preset default && \
+    cmake --build --preset default --target web-app && \
     cmake --install build && \
     rm -rf /opt/lemonade
-
-# Download latest llamacpp-rocm binary
-ARG LLAMACPP_ROCM_VERSION
-ARG LLAMACPP_ROCM_TARGET=gfx1151
-RUN set -eux; \
-    if [ -n "$LLAMACPP_ROCM_VERSION" ]; then \
-        LLAMACPP_ROCM_TAG="$LLAMACPP_ROCM_VERSION"; \
-    else \
-        LLAMACPP_ROCM_RELEASE_URL="https://github.com/lemonade-sdk/llamacpp-rocm/releases/latest"; \
-        LLAMACPP_ROCM_TAG="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$LLAMACPP_ROCM_RELEASE_URL")"; \
-        LLAMACPP_ROCM_TAG="${LLAMACPP_ROCM_TAG##*/}"; \
-    fi; \
-    LLAMACPP_ROCM_ASSET="llama-${LLAMACPP_ROCM_TAG}-ubuntu-rocm-${LLAMACPP_ROCM_TARGET}-x64.zip"; \
-    curl -fsSL -o "/tmp/${LLAMACPP_ROCM_ASSET}" "https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/${LLAMACPP_ROCM_TAG}/${LLAMACPP_ROCM_ASSET}"; \
-    mkdir -p /opt/llamacpp-rocm; \
-    unzip -q "/tmp/${LLAMACPP_ROCM_ASSET}" -d /opt/llamacpp-rocm; \
-    rm -f "/tmp/${LLAMACPP_ROCM_ASSET}"; \
-    chmod +x /opt/llamacpp-rocm/llama-server
-ENV PATH="/opt/llamacpp-rocm:${PATH}"
 
 # Clone and build FastFlowLM
 ARG FLM_VERSION

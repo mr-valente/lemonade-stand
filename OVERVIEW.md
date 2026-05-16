@@ -2,7 +2,7 @@
 
 A **server-first** Docker image for [Lemonade Server](https://lemonade-server.ai/) with full AMD acceleration support (ROCm, Vulkan, NPU).
 
-Lemonade ships with a desktop GUI, but this image is for users who prefer to run Lemonade as a headless server and manage everything from the command line. It includes Fish shell with a Starship prompt and custom shell functions that enhance the existing `lemonade-server` CLI and wrap common API calls for ergonomic, interactive model management.
+Lemonade ships with a desktop GUI, but this image is for users who prefer to run Lemonade as a headless server. It includes the Linux browser Web UI, plus Fish shell with a Starship prompt and custom shell functions that enhance the existing `lemonade` CLI and wrap common API calls for ergonomic, interactive model management.
 
 - **GitHub:** [github.com/mr-valente/lemonade-stand](https://github.com/mr-valente/lemonade-stand)
 - **Lemonade SDK:** [github.com/lemonade-sdk/lemonade](https://github.com/lemonade-sdk/lemonade)
@@ -10,6 +10,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 ## What's included
 
 - [Lemonade Server](https://github.com/lemonade-sdk/lemonade) and [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) built from source
+- Lemonade Linux browser Web UI served from the HTTP port
 - ROCm, Vulkan, and XRT/AMDXDNA backends for AMD GPUs, APUs, and NPUs
 - Fish shell with Starship prompt and custom `load`/`unload` commands with live tab completion
 - Docker health check against `/api/v1/health`
@@ -52,7 +53,9 @@ docker exec -it lemonade-stand fish
 | Command | Description |
 | :--- | :--- |
 | `lm [args...]` | Alias for `lemonade-server`. |
-| `load <model> [model...]` | Load models via the API. Tab-completes from available models. |
+| `install <recipe> <backend>` | Install or update a backend via the API. |
+| `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
+| `load <model> [model...] [options]` | Load models via the API. Tab-completes from available models. |
 | `load --set <name>` | Load a named group of models from `model_sets.json`. |
 | `unload <model>` | Unload a model. Tab-completes from loaded models. |
 | `unload --all` | Unload all currently loaded models. |

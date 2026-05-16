@@ -2,7 +2,7 @@
 
 A **server-first** Docker image for [Lemonade Server](https://lemonade-server.ai/) with full AMD acceleration support (ROCm, Vulkan, NPU).
 
-Lemonade ships with a desktop GUI, but this image is for users who prefer to run Lemonade as a headless server and manage everything from the command line. It includes Fish shell with a Starship prompt and custom shell functions that enhance the existing `lemonade-server` CLI and wrap common API calls for ergonomic, interactive model management.
+Lemonade ships with a desktop GUI, but this image is for users who prefer to run Lemonade as a headless server. It includes the Linux browser Web UI, plus Fish shell with a Starship prompt and custom shell functions that enhance the existing `lemonade` CLI and wrap common API calls for ergonomic, interactive model management.
 
 - **Docker Hub:** [valentemath/lemonade-stand](https://hub.docker.com/r/valentemath/lemonade-stand)
 - **Lemonade SDK:** [github.com/lemonade-sdk/lemonade](https://github.com/lemonade-sdk/lemonade)
@@ -10,8 +10,9 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 
 ## Features
 
-- **Server-first, no GUI** — Designed for headless deployment with Docker.
+- **Server-first, no desktop GUI** — Designed for headless deployment with Docker.
 - **Built from source** — Lemonade Server and FastFlowLM are compiled inside the image, always up to date.
+- **Built-in browser Web UI** — The Linux Web UI is bundled into the server build and served from the Lemonade HTTP port.
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
 - **Simple `load` / `unload` commands** — Manage models without writing curl commands. Tab completion fetches model names live from the API.
@@ -59,6 +60,12 @@ services:
 docker compose up -d
 ```
 
+Open the Web UI:
+
+```text
+http://localhost:8000
+```
+
 Connect to the shell
 
 ```bash
@@ -81,6 +88,9 @@ unload Gemma3-4b-it-FLM           # free the model
 ```fish
 # Load a single model
 load Qwen3-0.6B-GGUF
+
+# Load with per-request recipe options
+load Qwen3-0.6B-GGUF --ctx_size 8192 --llamacpp_backend vulkan --llamacpp_args "--no-context-shift --no-mmap" --save_options true
 
 # Load multiple models
 load Qwen3-0.6B-GGUF user.nomic-embed
@@ -217,7 +227,9 @@ These fish functions are available inside the container:
 | Command | Description |
 | :--- | :--- |
 | `lm [args...]` | Alias for `lemonade-server`. Use `lm serve`, `lm list`, `lm pull`, etc. |
-| `load <model> [model...]` | Load models via the API. |
+| `install <recipe> <backend>` | Install or update a backend via the API. |
+| `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
+| `load <model> [model...] [options]` | Load models via the API. |
 | `load --set <name>` | Load a named model set from `model_sets.json`. |
 | `unload <model>` | Unload a model via the API. |
 | `unload --all` | Unload all currently loaded models. |
