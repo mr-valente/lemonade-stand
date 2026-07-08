@@ -212,6 +212,15 @@ Mount these paths to persist data across container restarts:
 | `/root/.cache/lemonade` | Lemonade cache — custom model registrations and `model_sets.json`. |
 | `/root/.local/share/fish` | Fish shell command history. |
 
+This image runs Lemonade as root for broad device access. If you bind-mount host
+directories under `/root`, Docker-created files on the host will also be owned by
+root. To repair an existing `~/.local/share/lemonade-stand` tree:
+
+```bash
+docker compose down
+sudo chown -R "$(id -u):$(id -g)" "$HOME/.local/share/lemonade-stand"
+```
+
 ## Device access
 
 | Host device | Purpose |

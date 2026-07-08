@@ -78,9 +78,10 @@ COPY functions/ /root/.config/fish/functions/
 # Copy fish completions
 COPY completions/ /root/.config/fish/completions/
 
-# Copy nputop.py and make it executable
+# Copy startup wrapper and nputop.py, then make them executable
+COPY entrypoint.sh /opt/bin/lemonade-entrypoint
 COPY utils/nputop.py /opt/nputop.py
-RUN chmod +x /opt/nputop.py && \
+RUN chmod +x /opt/bin/lemonade-entrypoint /opt/nputop.py && \
     ln -s /opt/nputop.py /usr/local/bin/nputop
 
 # Update PCI IDs
@@ -88,7 +89,8 @@ RUN update-pciids
 
 # Create HuggingFace cache directories
 ENV HF_HOME=/huggingface \
-    HF_HUB_CACHE=/huggingface/hub
+    HF_HUB_CACHE=/huggingface/hub \
+    XDG_RUNTIME_DIR=/run/lemonade
 
 RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}" 
 
@@ -96,5 +98,6 @@ RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD curl -f -s http://localhost:${LEMONADE_PORT}/api/v1/health | jq -e '.status == "ok"' > /dev/null || exit 1
 
-# Start the server and passes the max loaded models configuration\
-CMD exec /opt/bin/lemond
+# Start the server.
+ENTRYPOINT ["/opt/bin/lemonade-entrypoint"]
+CMD ["/opt/bin/lemond"]

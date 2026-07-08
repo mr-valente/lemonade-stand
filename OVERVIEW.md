@@ -68,4 +68,11 @@ docker exec -it lemonade-stand fish
 | `/root/.cache/lemonade` | Custom model registrations and `model_sets.json`. |
 | `/root/.local/share/fish` | Fish shell command history. |
 
+Bind-mounted `/root` paths are written by container root. If a host data
+directory becomes root-owned, stop the container and run:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" "$HOME/.local/share/lemonade-stand"
+```
+
 For full documentation, configuration reference, and examples, see the [GitHub repository](https://github.com/mr-valente/lemonade-stand).
