@@ -9,7 +9,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 
 ## What's included
 
-- [Lemonade Server](https://github.com/lemonade-sdk/lemonade) and [FastFlowLM](https://github.com/FastFlowLM/FastFlowLM) built from source
+- [Lemonade Server](https://github.com/lemonade-sdk/lemonade) built from source
 - Lemonade Linux browser Web UI served from the HTTP port
 - ROCm, Vulkan, and XRT/AMDXDNA backends for AMD GPUs, APUs, and NPUs
 - Fish shell with Starship prompt and custom `load`/`unload` commands with live tab completion
@@ -39,7 +39,6 @@ services:
       - LEMONADE_LLAMACPP_ARGS=
           --flash-attn on
           --no-mmap 
-      # - LEMONADE_FLM_LINUX_BETA=1 # Uncomment for NPU access
     restart: unless-stopped
 ```
 

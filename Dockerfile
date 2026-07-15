@@ -52,16 +52,6 @@ RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
     cmake --install build && \
     rm -rf /opt/lemonade
 
-# Clone and build FastFlowLM
-ARG FLM_VERSION
-RUN git clone --recursive https://github.com/FastFlowLM/FastFlowLM.git /opt/FastFlowLM && \
-    cd /opt/FastFlowLM/src && \
-    if [ -n "$FLM_VERSION" ]; then git checkout "v${FLM_VERSION}"; fi && \
-    cmake --preset linux-default && \
-    cmake --build build && \
-    cmake --install build && \
-    rm -rf /opt/FastFlowLM
-
 # Configure fish and starship
 RUN curl -sS https://starship.rs/install.sh | sh -s -- -y && \
     mkdir -p ~/.config/fish && \

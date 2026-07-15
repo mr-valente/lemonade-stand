@@ -11,7 +11,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 ## Features
 
 - **Server-first, no desktop GUI** — Designed for headless deployment with Docker.
-- **Built from source** — Lemonade Server and FastFlowLM are compiled inside the image, always up to date.
+- **Built from source** — Lemonade Server is compiled inside the image, always up to date.
 - **Built-in browser Web UI** — The Linux Web UI is bundled into the server build and served from the Lemonade HTTP port.
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
@@ -50,7 +50,6 @@ services:
       - LEMONADE_LLAMACPP_ARGS=
           --flash-attn on
           --no-mmap 
-      # - LEMONADE_FLM_LINUX_BETA=1 # Uncomment for NPU access
     restart: unless-stopped
 ```
 
@@ -76,9 +75,9 @@ From inside the container you can manage models interactively:
 
 ```fish
 lm list                          # list all available models
-lm pull Gemma3-4b-it-FLM         # download a model from the registry
-load Gemma3-4b-it-FLM            # load a model from the registry
-unload Gemma3-4b-it-FLM           # free the model
+lm pull Qwen3-0.6B-GGUF          # download a model from the registry
+load Qwen3-0.6B-GGUF             # load a model from the registry
+unload Qwen3-0.6B-GGUF            # free the model
 ```
 
 ## Managing models
@@ -183,7 +182,6 @@ The server is configured entirely through environment variables. Set them in you
 | :--- | :--- | :--- |
 | `LEMONADE_LLAMACPP` | `vulkan` | LLM backend: `rocm`, `vulkan`, or `cpu`. |
 | `LEMONADE_WHISPERCPP` | `cpu` | Audio backend: `vulkan` or `cpu` on Linux. |
-| `LEMONADE_FLM_LINUX_BETA` | *(unset)* | Set to `1` to enable FastFlowLM on Linux (experimental). |
 
 ### Inference tuning
 
