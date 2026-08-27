@@ -90,4 +90,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 
 # Start the server.
 ENTRYPOINT ["/opt/bin/lemonade-entrypoint"]
-CMD ["/opt/bin/lemond"]
+ CMD ["/opt/bin/lemond", "/root/.cache/lemonade"]

@@ -16,6 +16,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
 - **Simple `load` / `unload` commands** — Manage models without writing curl commands. Tab completion fetches model names live from the API.
+- **In-place model updates** — `update` upgrades downloaded models to their latest upstream revision without deleting them first, and reclaims the space the old revision used.
 - **Model sets** — Define named groups of models in a JSON file and load them all at once.
 
 ## Prerequisites
@@ -108,12 +109,82 @@ unload Qwen3-0.6B-GGUF
 unload --all
 ```
 
+### Updating
+
+`lemonade check-updates` reports which downloaded models have a newer upstream
+revision but cannot act on it. `update` does:
+
+```fish
+# See what has an update waiting
+update --check
+
+# Update one model (or several)
+update user.Phi-4-Mini-GGUF
+update user.Phi-4-Mini-GGUF user.nomic-embed
+
+# Update everything that has a newer revision
+update --all
+
+# Update everything, then reclaim the space the old revisions used
+update --all --prune
+```
+
+Models are upgraded **in place**: `update` re-pulls the model under its existing
+registration, so the new revision is downloaded alongside the old one and the
+server only switches over once it is complete. Nothing is deleted first, so a
+failed or interrupted download always leaves the working model intact — and the
+registration in `user_models.json` (checkpoint, quant, recipe options) is never
+lost the way it is when you delete a model and pull it again.
+
+If a model is loaded when it is updated, it is unloaded first — otherwise the
+running backend keeps serving the old weights — and reloaded afterwards. Pass
+`--no-reload` to leave it unloaded.
+
+| Option | Description |
+| :--- | :--- |
+| `-a`, `--all` | Update every model reported by `check-updates`. |
+| `-c`, `--check` | List pending updates and exit. |
+| `-f`, `--force` | Re-pull even when no update is reported, and ignore the free-space check. |
+| `--flm` | With `--all`, also refresh FLM models. |
+| `-n`, `--dry-run` | Show what would be done, change nothing. |
+| `-y`, `--yes` | Do not prompt for confirmation. |
+| `-p`, `--prune` | Delete superseded weights after a successful update. |
+| `--no-reload` | Leave models unloaded instead of restoring them. |
+
+#### FLM models
+
+FLM (NPU) models are managed by the `flm` CLI rather than the HuggingFace cache,
+and Lemonade's update check skips them — `flm` cannot report whether a newer
+revision exists. They are therefore never included in `update --all` unless you
+ask for them, and updating one is always an unconditional re-download:
+
+```fish
+update --all --flm          # everything, FLM models included
+update llama3.2-1b-FLM      # just this one
+```
+
+#### Reclaiming disk space
+
+An in-place upgrade leaves the previous revision in the HuggingFace cache. That
+is what makes the upgrade safe, but the old weights are dead once the new ones
+land. `--prune` removes them:
+
+```fish
+update --all --prune        # update, then clean up
+update --prune              # clean up superseded revisions from earlier updates
+```
+
+Pruning only deletes files that no downloaded model resolves to any more, and it
+lists everything before deleting it. Add `--dry-run` to see the list without
+touching anything.
+
 ### Tab completion
 
-Both `load` and `unload` support tab completion:
+`load`, `unload`, and `update` support tab completion:
 
 - `load` + Tab — shows all models known to the server plus set names from `model_sets.json`.
 - `unload` + Tab — shows only the currently loaded models.
+- `update` + Tab — shows only the downloaded models.
 
 ### Model sets
 
@@ -240,6 +311,10 @@ These fish functions are available inside the container:
 | `load --set <name>` | Load a named model set from `model_sets.json`. |
 | `unload <model>` | Unload a model via the API. |
 | `unload --all` | Unload all currently loaded models. |
+| `update <model> [model...]` | Update downloaded models in place. |
+| `update --all` | Update every model that has a newer upstream revision. |
+| `update --check` | List models with updates available. |
+| `update --prune` | Reclaim disk space from superseded revisions. |
 
 ## License
 

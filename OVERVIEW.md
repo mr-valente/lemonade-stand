@@ -12,7 +12,8 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - [Lemonade Server](https://github.com/lemonade-sdk/lemonade) built from source
 - Lemonade Linux browser Web UI served from the HTTP port
 - ROCm, Vulkan, and XRT/AMDXDNA backends for AMD GPUs, APUs, and NPUs
-- Fish shell with Starship prompt and custom `load`/`unload` commands with live tab completion
+- Fish shell with Starship prompt and custom `load`/`unload`/`update` commands with live tab completion
+- In-place model updates that never delete a model before its replacement has downloaded
 - Docker health check against `/api/v1/health`
 
 ## Quick start
@@ -58,6 +59,10 @@ docker exec -it lemonade-stand fish
 | `load --set <name>` | Load a named group of models from `model_sets.json`. |
 | `unload <model>` | Unload a model. Tab-completes from loaded models. |
 | `unload --all` | Unload all currently loaded models. |
+| `update <model> [model...]` | Update downloaded models in place. |
+| `update --all` | Update every model that has a newer upstream revision. |
+| `update --check` | List models with updates available. |
+| `update --prune` | Reclaim disk space from superseded revisions. |
 
 ## Volumes
 
