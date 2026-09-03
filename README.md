@@ -6,7 +6,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 
 - **Docker Hub:** [valentemath/lemonade-stand](https://hub.docker.com/r/valentemath/lemonade-stand)
 - **Lemonade SDK:** [github.com/lemonade-sdk/lemonade](https://github.com/lemonade-sdk/lemonade)
-- **Lemonade Server CLI docs:** [lemonade-server.ai/docs/server/lemonade-server-cli](https://lemonade-server.ai/docs/server/lemonade-server-cli/)
+- **Lemonade Server CLI docs:** [lemonade-server.ai/docs/guide/cli](https://lemonade-server.ai/docs/guide/cli/)
 
 ## Features
 
@@ -15,8 +15,10 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - **Built-in browser Web UI** — The Linux Web UI is bundled into the server build and served from the Lemonade HTTP port.
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
-- **Simple `load` / `unload` commands** — Manage models without writing curl commands. Tab completion fetches model names live from the API.
+- **Enhanced model management** — `pull`, `load`, `unload`, `update`, and `delete` add safer workflows and live tab completion around Lemonade's API and CLI.
+- **Companion-aware pulls** — `pull` discovers GGUF variants and registers advertised MTP/draft and multimodal projector files as explicit checkpoints.
 - **In-place model updates** — `update` upgrades downloaded models to their latest upstream revision without deleting them first, and reclaims the space the old revision used.
+- **Thorough deletion** — `delete` cancels active downloads and removes safe-to-delete cache, lock, and orphaned-file leftovers after Lemonade deletes the model, and can remove cache directories earlier deletions stranded.
 - **Model sets** — Define named groups of models in a JSON file and load them all at once.
 
 ## Prerequisites
@@ -75,13 +77,55 @@ docker exec -it lemonade-stand fish
 From inside the container you can manage models interactively:
 
 ```fish
-lm list                          # list all available models
-lm pull Qwen3-0.6B-GGUF          # download a model from the registry
-load Qwen3-0.6B-GGUF             # load a model from the registry
-unload Qwen3-0.6B-GGUF            # free the model
+lm list                                    # list all available models
+pull unsloth/Qwen3.8-27B-GGUF              # choose a quant; include its MTP file
+load user.Qwen3.8-27B-GGUF-UD-Q4_K_XL      # load the registered model
+unload user.Qwen3.8-27B-GGUF-UD-Q4_K_XL    # free the model
 ```
 
 ## Managing models
+
+### Pulling
+
+For a registered Lemonade model, `pull` delegates directly to the Lemonade CLI:
+
+```fish
+pull Qwen3-0.6B-GGUF
+```
+
+For a Hugging Face or ModelScope repository, it inspects the repository first,
+offers its GGUF variants, and creates an explicit multi-checkpoint registration.
+Advertised MTP/draft and multimodal projector files are included automatically:
+
+```fish
+pull unsloth/Qwen3.8-27B-GGUF
+
+# Non-interactive, with an explicit quant and name
+pull unsloth/Qwen3.8-27B-GGUF \
+  --quant UD-Q4_K_XL \
+  --name user.Qwen3.8-27B-UD-Q4_K_XL \
+  --yes
+```
+
+The resulting registration contains `main`, `draft`, and (when advertised)
+`mmproj` checkpoints. This is important for repositories whose MTP file lives in
+a subdirectory such as `MTP/mtp-Qwen3.8-27B-Q4_0.gguf`; keeping the full relative
+path prevents the draft from being silently missed. Use `--no-draft` or
+`--no-mmproj` to opt out, or `--draft PATH` / `--mmproj PATH` to override the
+automatic choice.
+
+To repair an already-registered custom model whose original registration has no
+draft checkpoint, use its public (bare) name or its internal `user.*` name:
+
+```fish
+pull --repair-mtp Qwen3.8-27B-GGUF-UD-Q4_K_XL --yes
+```
+
+The repair inspects that model's saved repository and quant, adds the matching
+MTP checkpoint while preserving its recipe options, then downloads it. The old
+registration is restored automatically if the download fails. After a
+successful repair, ordinary `update` runs refresh the MTP alongside the main
+checkpoint.
 
 ### Loading
 
@@ -133,8 +177,12 @@ Models are upgraded **in place**: `update` re-pulls the model under its existing
 registration, so the new revision is downloaded alongside the old one and the
 server only switches over once it is complete. Nothing is deleted first, so a
 failed or interrupted download always leaves the working model intact — and the
-registration in `user_models.json` (checkpoint, quant, recipe options) is never
-lost the way it is when you delete a model and pull it again.
+registration in `user_models.json` (all checkpoints, quant, recipe options) is
+never lost the way it is when you delete a model and pull it again. `update`
+uses the enhanced `pull` path, so already-registered MTP/draft checkpoints are
+refreshed along with the main weights; use `pull --repair-mtp` once to add a
+draft that was missing from an older registration. Its prune keep-set also
+includes every checkpoint reported by the model-files API.
 
 If a model is loaded when it is updated, it is unloaded first — otherwise the
 running backend keeps serving the old weights — and reloaded afterwards. Pass
@@ -178,13 +226,55 @@ Pruning only deletes files that no downloaded model resolves to any more, and it
 lists everything before deleting it. Add `--dry-run` to see the list without
 touching anything.
 
+### Deleting
+
+`delete` previews and confirms destructive work, asks Lemonade to unload and
+delete each model, then removes leftovers that are safe to attribute to it:
+
+```fish
+delete --dry-run user.Qwen3.8-27B-GGUF-UD-Q4_K_XL
+delete user.Qwen3.8-27B-GGUF-UD-Q4_K_XL
+delete --yes user.old-model-1 user.old-model-2
+```
+
+The cleanup cancels an active download before touching its files, clears stopped
+download records, removes a repository cache and its lock directory only when no
+remaining model still holds files there, and removes unreferenced files from
+shared caches. It also runs Lemonade's legacy multi-repository orphan sweep.
+`--no-cleanup` limits the operation to Lemonade's built-in delete behavior.
+
+A registration that is merely *known* to the server does not keep a directory
+alive; only one that actually holds files does. A built-in model stays listed
+after its own deletion with `downloaded: false`, and treating that as a claim is
+what leaves repository directories behind in the first place.
+
+Those already-stranded directories can be named directly, either by repository
+or by directory:
+
+```fish
+delete --dry-run unsloth/gemma-4-12b-it-GGUF
+delete --yes models--unsloth--gemma-4-12b-it-GGUF
+```
+
+Tab completion lists them, so anything in `$HF_HUB_CACHE` that no downloaded or
+registered model claims is reachable without typing it out. A directory that is
+still claimed is refused, with the model to delete instead named in the error. A
+directory named on the command line is the request itself rather than extra
+tidying, so `--no-cleanup` does not hold it back.
+
+Collections are deliberately not cascade-deleted: deleting a collection removes
+the collection entry, while its components stay installed. Name those component
+models explicitly if they should also be deleted.
+
 ### Tab completion
 
-`load`, `unload`, and `update` support tab completion:
+The model-management functions support tab completion:
 
+- `pull` + Tab — shows registered models; `--quant`, `--draft`, and `--mmproj` complete from repository inspection.
 - `load` + Tab — shows all models known to the server plus set names from `model_sets.json`.
 - `unload` + Tab — shows only the currently loaded models.
 - `update` + Tab — shows only the downloaded models.
+- `delete` + Tab — shows downloaded models, removable `user.*` registrations, and leftover cache directories that no model claims.
 
 ### Model sets
 
@@ -208,31 +298,33 @@ Then load an entire set:
 load --set coding
 ```
 
-### Installing custom models
+### Manual registrations
 
-Use `lemonade-server pull` (or the `lm` alias) to register and download models from HuggingFace. Custom model names must use the `user.` namespace prefix:
+The enhanced `pull` function covers ordinary GGUF repositories. For unusual
+recipes or checkpoint roles, use Lemonade's manual form through `lm`. Custom
+model names must use the `user.` namespace prefix:
 
 ```fish
 # Register a custom GGUF model
 lm pull user.Phi-4-Mini-GGUF \
-  --checkpoint unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M \
+  --checkpoint main unsloth/Phi-4-mini-instruct-GGUF:Q4_K_M \
   --recipe llamacpp
 
 # Register an embedding model
 lm pull user.nomic-embed \
-  --checkpoint nomic-ai/nomic-embed-text-v1-GGUF:Q4_K_S \
+  --checkpoint main nomic-ai/nomic-embed-text-v1-GGUF:Q4_K_S \
   --recipe llamacpp \
-  --embedding
+  --label embeddings
 
 # Register a vision model with multimodal projector
 lm pull user.Gemma-3-4b \
-  --checkpoint ggml-org/gemma-3-4b-it-GGUF:Q4_K_M \
+  --checkpoint main ggml-org/gemma-3-4b-it-GGUF:Q4_K_M \
+  --checkpoint mmproj ggml-org/gemma-3-4b-it-GGUF:mmproj-model-f16.gguf \
   --recipe llamacpp \
-  --vision \
-  --mmproj mmproj-model-f16.gguf
+  --label vision
 ```
 
-See the full [pull options](https://lemonade-server.ai/docs/server/lemonade-server-cli/#options-for-pull) in the Lemonade docs.
+See the full [pull options](https://lemonade-server.ai/docs/guide/cli/#options-for-pull) in the Lemonade docs.
 
 ## Configuration
 
@@ -269,7 +361,7 @@ The server is configured entirely through environment variables. Set them in you
 | `HF_HOME` | `/huggingface` | HuggingFace home directory. |
 | `HF_HUB_CACHE` | `/huggingface/hub` | HuggingFace Hub download cache. |
 
-For the complete list of options, see the [Lemonade Server CLI documentation](https://lemonade-server.ai/docs/server/lemonade-server-cli/).
+For the complete list of options, see the [Lemonade Server CLI documentation](https://lemonade-server.ai/docs/guide/cli/).
 
 ## Volumes
 
@@ -307,6 +399,7 @@ These fish functions are available inside the container:
 | `lm [args...]` | Alias for `lemonade-server`. Use `lm serve`, `lm list`, `lm pull`, etc. |
 | `install <recipe> <backend>` | Install or update a backend via the API. |
 | `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
+| `pull <model-or-repo> [options]` | Pull a registered model or interactively register a repository with its companion checkpoints. |
 | `load <model> [model...] [options]` | Load models via the API. |
 | `load --set <name>` | Load a named model set from `model_sets.json`. |
 | `unload <model>` | Unload a model via the API. |
@@ -315,6 +408,7 @@ These fish functions are available inside the container:
 | `update --all` | Update every model that has a newer upstream revision. |
 | `update --check` | List models with updates available. |
 | `update --prune` | Reclaim disk space from superseded revisions. |
+| `delete <target> [target...]` | Delete models, or leftover cache directories, and safely clean their filesystem leftovers. |
 
 ## License
 

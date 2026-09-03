@@ -10,5 +10,20 @@ complete -c update -s p -l prune -d 'Delete superseded weights after updating'
 complete -c update -l no-reload -d 'Leave models unloaded after updating'
 complete -c update -s h -l help -d 'Show usage'
 
+function __update_completion_models
+    set -l port $LEMONADE_PORT
+    test -n "$port"; or set port 8000
+
+    set -l headers
+    if set -q LEMONADE_ADMIN_API_KEY; and test -n "$LEMONADE_ADMIN_API_KEY"
+        set -a headers -H "Authorization: Bearer $LEMONADE_ADMIN_API_KEY"
+    else if set -q LEMONADE_API_KEY; and test -n "$LEMONADE_API_KEY"
+        set -a headers -H "Authorization: Bearer $LEMONADE_API_KEY"
+    end
+
+    curl -s --max-time 3 "http://localhost:$port/api/v1/models" $headers 2>/dev/null |
+        jq -r '.data[]? | select(.downloaded) | [.id, (.recipe // "model")] | @tsv' 2>/dev/null
+end
+
 # Complete downloaded model names from the API — only those can be updated
-complete -c update -f -a '(curl -s "http://localhost:$LEMONADE_PORT/api/v1/models" | jq -r ".data[] | select(.downloaded) | .id")'
+complete -c update -f -a '(__update_completion_models)'

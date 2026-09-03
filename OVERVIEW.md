@@ -12,8 +12,10 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - [Lemonade Server](https://github.com/lemonade-sdk/lemonade) built from source
 - Lemonade Linux browser Web UI served from the HTTP port
 - ROCm, Vulkan, and XRT/AMDXDNA backends for AMD GPUs, APUs, and NPUs
-- Fish shell with Starship prompt and custom `load`/`unload`/`update` commands with live tab completion
+- Fish shell with Starship prompt and enhanced `pull`/`load`/`unload`/`update`/`delete` commands with live tab completion
+- Companion-aware GGUF pulls that preserve MTP/draft and multimodal projector paths, plus repair of older registrations
 - In-place model updates that never delete a model before its replacement has downloaded
+- Confirmed deletion with conservative cleanup of unshared caches, plus removal of cache directories that earlier deletions stranded
 - Docker health check against `/api/v1/health`
 
 ## Quick start
@@ -55,6 +57,7 @@ docker exec -it lemonade-stand fish
 | `lm [args...]` | Alias for `lemonade-server`. |
 | `install <recipe> <backend>` | Install or update a backend via the API. |
 | `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
+| `pull <model-or-repo> [options]` | Pull registered models or register a repository with its companion checkpoints. |
 | `load <model> [model...] [options]` | Load models via the API. Tab-completes from available models. |
 | `load --set <name>` | Load a named group of models from `model_sets.json`. |
 | `unload <model>` | Unload a model. Tab-completes from loaded models. |
@@ -63,6 +66,7 @@ docker exec -it lemonade-stand fish
 | `update --all` | Update every model that has a newer upstream revision. |
 | `update --check` | List models with updates available. |
 | `update --prune` | Reclaim disk space from superseded revisions. |
+| `delete <target> [target...]` | Delete models, or leftover cache directories, and conservatively clean cache leftovers. |
 
 ## Volumes
 

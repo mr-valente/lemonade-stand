@@ -17,9 +17,9 @@ function __update_usage
     echo "      --no-reload   Leave models unloaded instead of restoring them"
     echo "  -h, --help        Show this help"
     echo ""
-    echo "Models are upgraded in place with 'lemonade pull', which downloads the new"
-    echo "revision alongside the old one and only switches over on success. Nothing is"
-    echo "deleted first, so a failed download always leaves the existing model intact."
+    echo "Models are upgraded in place through the enhanced 'pull' function. Registered"
+    echo "multi-checkpoint definitions (including MTP drafts) are preserved, and the new"
+    echo "revision only replaces the old one after every checkpoint downloads successfully."
 end
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,9 @@ function __update_api --argument-names method path body timeout
     set -l curl_args -sS -m $timeout -X $method "http://localhost:$port$path"
     set -a curl_args -H "Content-Type: application/json"
 
-    if set -q LEMONADE_API_KEY; and test -n "$LEMONADE_API_KEY"
+    if set -q LEMONADE_ADMIN_API_KEY; and test -n "$LEMONADE_ADMIN_API_KEY"
+        set -a curl_args -H "Authorization: Bearer $LEMONADE_ADMIN_API_KEY"
+    else if set -q LEMONADE_API_KEY; and test -n "$LEMONADE_API_KEY"
         set -a curl_args -H "Authorization: Bearer $LEMONADE_API_KEY"
     end
 
@@ -169,6 +171,11 @@ end
 function __update_pull --argument-names model_name
     set -l cli (__update_cli)
 
+    if test -n "$cli"; and functions -q pull
+        pull --yes -- "$model_name"
+        return $status
+    end
+
     if test -n "$cli"
         # The CLI picks up the port and key from the environment; export them so
         # it talks to the same server this function does, even when they are set
@@ -176,6 +183,7 @@ function __update_pull --argument-names model_name
         # Note: these must not sit inside an if/begin block — `set -l` there is
         # scoped to the block and would be gone by the time the CLI runs.
         set -lx LEMONADE_PORT (__update_port)
+        set -q LEMONADE_ADMIN_API_KEY; and set -lx LEMONADE_ADMIN_API_KEY $LEMONADE_ADMIN_API_KEY
         set -q LEMONADE_API_KEY; and set -lx LEMONADE_API_KEY $LEMONADE_API_KEY
 
         $cli pull $model_name
