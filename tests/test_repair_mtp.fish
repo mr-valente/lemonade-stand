@@ -66,6 +66,14 @@ function __pull_api --argument-names method url body timeout
         case 'POST /api/v1/unload'
             set -ga events unload
             test "$failure_mode" = unload; and return 1
+            if test "$failure_mode" = unload_not_loaded
+                echo '{"error":"Model not loaded: user.Model"}'
+                return 1
+            end
+            if test "$failure_mode" = unload_refused
+                echo '{"error":"Model is pinned"}'
+                return 1
+            end
             check 'unload targets only this model' test (printf '%s' "$body" | jq -r '.model_name') = user.Model
             echo '{"status":"success"}'
         case 'POST /api/v1/models/register'
@@ -162,6 +170,23 @@ for mode in old_files unload
     contains pull $events
     check 'preflight failure never pulls' test $status -eq 1
 end
+
+# A model the server is not holding is already in the state a replacement
+# needs, so a 404 from unload must not abort the repair.
+reset_fixture
+set failure_mode unload_not_loaded
+pull --repair-mtp Model --draft MTP/mtp-new-Q4_0.gguf --yes >"$sandbox/output" 2>"$sandbox/error"
+check 'an unloaded model does not block replacement' test $status -eq 0
+check 'an unloaded model still runs the full replacement' test (string join ',' $events) = unload,register,pull,inventory
+check 'an unloaded model replacement removes the old draft' test ! -L "$old_path"
+
+reset_fixture
+set failure_mode unload_refused
+pull --repair-mtp Model --draft MTP/mtp-new-Q4_0.gguf --yes >"$sandbox/output" 2>"$sandbox/error"
+check 'a refused unload aborts replacement' test $status -eq 1
+check 'a refused unload reports the server message' string match -q '*Model is pinned*' (cat "$sandbox/error")
+check 'a refused unload leaves registration untouched' test (__pull_registration_payload "$model" user.Model '') = "$original"
+check 'a refused unload preserves old files' test -f "$old_path"
 
 reset_fixture
 set other_model (jq -nc --arg draft "$old_checkpoint" '{id:"Other",checkpoints:{draft:$draft}}')

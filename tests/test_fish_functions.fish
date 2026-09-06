@@ -101,7 +101,8 @@ assert_equal 0 (count $selected) 'cancelled selection emits no value'
 rm -- $menu_output
 
 # Simulate terminal input while keeping all server and download calls stubbed.
-# Multiple global drafts must not override the selected variant's draft_file.
+# The menus run inside command substitutions, which do not inherit a
+# per-command stdin redirect, so feed each one explicitly.
 set -l original_fixture $pull_fixture
 set pull_fixture (printf '%s\n' "$pull_fixture" | jq -c '.draft_files += ["mtp-other-BF16.gguf"]')
 function isatty
@@ -111,19 +112,59 @@ functions -c __pull_prompt_variant __test_prompt_variant
 function __pull_prompt_variant --argument-names variants
     printf '\n' | __test_prompt_variant "$variants"
 end
+functions -c __pull_prompt_draft __test_prompt_draft
+function __pull_prompt_draft
+    printf '%s\n' "$draft_answer" | __test_prompt_draft $argv
+end
+set -g draft_answer ''
 set -g pull_cli_args
 set -l prompt_input (mktemp)
-printf '\n\n' >$prompt_input
+printf '\n' >$prompt_input
 pull unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
-assert_equal 0 $status 'interactive pull accepts default variant and model name'
+assert_equal 0 $status 'interactive pull accepts default variant, draft, and model name'
 assert_contains 'user.Qwen3.8-27B-GGUF-UD-Q4_K_XL' 'interactive default name contains only the variant' $pull_cli_args
 assert_contains 'unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL' 'interactive main checkpoint contains only the variant' $pull_cli_args
 assert_contains 'unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf' \
-    'interactive pull resolves the variant-specific draft despite multiple global drafts' $pull_cli_args
+    'the draft menu defaults to the draft recommended for the selected variant' $pull_cli_args
+
+# An alternative companion advertised for other quants must be selectable, and
+# a flattened choice must still reach the registration as a repository path.
+set -g draft_answer 2
+set -g pull_cli_args
+pull unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
+assert_equal 0 $status 'interactive pull accepts an alternative draft'
+assert_contains 'unsloth/Qwen3.8-27B-GGUF:mtp-other-BF16.gguf' \
+    'the draft menu registers the alternative companion' $pull_cli_args
+assert_not_contains 'unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf' \
+    'choosing an alternative replaces the recommended draft' $pull_cli_args
+
+# A cancelled draft menu must abort before anything is registered.
+set -g draft_answer unknown
+set -g pull_cli_args
+pull unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
+assert_equal 1 $status 'an invalid draft selection fails the pull'
+assert_equal '' "$pull_cli_args" 'an invalid draft selection never registers a model'
+
+# --yes and --draft must keep their non-interactive contract.
+set -g draft_answer 2
+set -g pull_cli_args
+pull --yes unsloth/Qwen3.8-27B-GGUF >/dev/null
+assert_contains 'unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf' \
+    '--yes takes the recommended draft without a menu' $pull_cli_args
+set -g pull_cli_args
+pull --draft mtp-other-BF16.gguf unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
+assert_contains 'unsloth/Qwen3.8-27B-GGUF:mtp-other-BF16.gguf' \
+    '--draft bypasses the menu' $pull_cli_args
+set -g pull_cli_args
+pull --no-draft unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
+assert_not_contains draft '--no-draft skips the menu entirely' $pull_cli_args
+
 rm -- $prompt_input
-functions -e isatty __pull_prompt_variant
+functions -e isatty __pull_prompt_variant __pull_prompt_draft
 functions -c __test_prompt_variant __pull_prompt_variant
-functions -e __test_prompt_variant
+functions -c __test_prompt_draft __pull_prompt_draft
+functions -e __test_prompt_variant __test_prompt_draft
+set -e draft_answer
 set pull_fixture $original_fixture
 
 pull --yes --quant UD-Q4_K_XL unsloth/Qwen3.8-27B-GGUF >/dev/null

@@ -16,7 +16,8 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
 - **Enhanced model management** — `pull`, `load`, `unload`, `update`, and `delete` add safer workflows and live tab completion around Lemonade's API and CLI.
-- **Companion-aware pulls** — `pull` discovers GGUF variants and registers advertised MTP/draft and multimodal projector files as explicit checkpoints.
+- **Companion-aware pulls** — `pull` discovers GGUF variants, offers the repository's MTP/draft companions, and registers them and multimodal projector files as explicit checkpoints.
+- **Parallel downloads** — `fastpull` pre-seeds the Hugging Face cache over several connections per file, roughly 4x faster than a single-connection pull.
 - **In-place model updates** — `update` upgrades downloaded models to their latest upstream revision without deleting them first, and reclaims the space the old revision used.
 - **Thorough deletion** — `delete` cancels active downloads and removes safe-to-delete cache, lock, and orphaned-file leftovers after Lemonade deletes the model, and can remove cache directories earlier deletions stranded.
 - **Model sets** — Define named groups of models in a JSON file and load them all at once.
@@ -155,6 +156,22 @@ path prevents the draft from being silently missed. Use `--no-draft` or
 `--no-mmproj` to opt out, or `--draft PATH` / `--mmproj PATH` to override the
 automatic choice.
 
+A repository usually ships MTP companions at several quants, and the one a
+variant advertises is only its recommendation. When more than one is available,
+an interactive pull offers the same menu `--repair-mtp` does, with the
+recommended companion as the default:
+
+```
+Select an MTP/draft companion:
+  1) MTP/mtp-gemma-4-E2B-it-BF16.gguf
+  2) MTP/mtp-gemma-4-E2B-it-Q8_0.gguf
+  3) mtp-gemma-4-E2B-it.gguf
+Draft [1]:
+```
+
+`--yes`, `--draft PATH`, and `--no-draft` all skip the menu. A companion chosen
+by bare filename is resolved back to its repository path before registration.
+
 To add or replace an already-registered custom model's draft checkpoint, use its
 public (bare) name or its internal `user.*` name:
 
@@ -171,12 +188,44 @@ The repair inspects that model's saved repository and quant, adds the matching
 MTP checkpoint while preserving its recipe options, then downloads it. `--yes`
 alone refreshes an existing draft; it never chooses a replacement automatically.
 Replacing a draft unloads the model and leaves it ready to load with the new
-draft. The old registration is restored automatically if the download fails,
+draft; a model that is not currently loaded is simply left alone. The old registration is restored automatically if the download fails,
 and the old files stay in place. After success, only the previous draft's resolved
 cache files are deleted, and files still referenced by another model are kept.
 If reference checks fail, cleanup is skipped and the command reports that the
 replacement succeeded but old files may remain. Ordinary `update` runs refresh
 the selected MTP alongside the main checkpoint.
+
+### Faster pulls
+
+Lemonade downloads each file over a single connection, and Hugging Face shapes
+per-connection throughput, so a pull leaves most of the link idle. `fastpull`
+pre-seeds the cache using several ranged connections per file, then hands off to
+`pull` for registration:
+
+```fish
+# Same arguments as pull
+fastpull unsloth/Qwen3.8-27B-GGUF --quant UD-Q4_K_XL --yes
+
+# More or fewer connections per file (default 8)
+fastpull unsloth/Qwen3.8-27B-GGUF --streams 16 --yes
+```
+
+Measured on a 2.5 Gb/s link pulling a 3.1 GB model (main GGUF + projector), with
+another download and a llama-server running concurrently:
+
+| | Wall time | Effective |
+|---|---|---|
+| `pull` | 192 s | ~16 MB/s |
+| `fastpull` | 45 s | ~69 MB/s |
+
+Throughput plateaus around 8 connections; more than that buys very little. Set a
+different default with `LEMONADE_FASTPULL_STREAMS`.
+
+Every pre-seeded file is checked against the sha256 Hugging Face advertises, and
+Lemonade verifies it again when it registers the model, so a corrupted transfer
+cannot be registered. Anything `fastpull` cannot pre-seed — an unreachable
+repository, a variant it cannot match, an ambiguous draft companion — is simply
+left for `pull` to download the usual way, so the result is identical either way.
 
 ### Loading
 

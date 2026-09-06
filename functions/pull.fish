@@ -16,8 +16,11 @@ function __pull_usage
     echo "  -y, --yes                Use the recommended variant and default name"
     echo "  -h, --help               Show this help"
     echo ""
-    echo "Draft and projector companions are included automatically. Explicit paths"
-    echo "are relative to the model repository, for example MTP/mtp-model-Q4_0.gguf."
+    echo "Draft and projector companions are included automatically. When a repository"
+    echo "advertises several MTP/draft companions, an interactive pull offers them and"
+    echo "defaults to the one recommended for the selected variant; --yes takes it."
+    echo "Explicit paths are relative to the model repository, for example"
+    echo "MTP/mtp-model-Q4_0.gguf."
     echo "With --repair-mtp, choose a replacement interactively or with --draft PATH."
     echo "--yes keeps an existing draft unless --draft is specified. A replacement"
     echo "unloads the model and deletes the old draft only after success, if unshared."
@@ -305,6 +308,27 @@ function __pull_prompt_draft --argument-names existing_draft
     end
 end
 
+function __pull_unload_model --argument-names model_name
+    set -l body (jq -nc --arg model "$model_name" '{model_name: $model}')
+    set -l response (__pull_api POST /api/v1/unload "$body" 120)
+    set -l code $status
+
+    if test $code -eq 0
+        if printf '%s\n' "$response" | jq -e '.status == "success"' >/dev/null 2>&1
+            return 0
+        end
+    else if test $code -eq 1
+        # A model the server is not holding is already in the state a
+        # replacement needs; only a real refusal may abort the repair.
+        if string match -qir 'model not (loaded|found)' -- (__pull_api_error "$response")
+            return 0
+        end
+    end
+
+    echo "Error: could not unload the model: "(__pull_api_error "$response") >&2
+    return 1
+end
+
 function __pull_model_files --argument-names model_name
     set -l encoded (string escape --style=url -- "$model_name")
     set -l payload (__pull_api GET "/api/v1/models/$encoded/files?include_paths=true" '' 60)
@@ -543,10 +567,8 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
     end
 
     if test "$replacing" = true
-        set -l body (jq -nc --arg model "$model_name" '{model_name: $model}')
-        set -l unloaded (__pull_api POST /api/v1/unload "$body" 120)
-        if test $status -ne 0; or not printf '%s\n' "$unloaded" | jq -e '.status == "success"' >/dev/null 2>&1
-            echo "Error: could not unload the model; its registration and old draft were kept." >&2
+        if not __pull_unload_model "$model_name"
+            echo "       Its registration and old draft were kept." >&2
             return 1
         end
     end
@@ -743,6 +765,47 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
         return 1
     end
 
+    set -l draft
+    if set -q _flag_draft
+        set draft $_flag_draft[-1]
+    else if not set -q _flag_no_draft
+        set draft (printf '%s\n' "$variants" | jq -r --arg variant "$variant_name" '
+            [.variants[]?
+             | select((.name | ascii_downcase) == ($variant | ascii_downcase))
+             | .draft_file // empty][0] // empty' 2>/dev/null)
+
+        # A variant's own draft_file is only the repository's recommendation.
+        # Most MTP repositories ship companions at several quants that all pair
+        # with this variant, so offer the same menu --repair-mtp does instead of
+        # silently taking the recommendation.
+        set -l candidates (__pull_draft_candidates "$variants" "$draft")
+        if test (count $candidates) -gt 1; and not set -q _flag_yes; and isatty stdin
+            set draft (__pull_prompt_draft '' $candidates)
+            or return 1
+        else if test -z "$draft"
+            if test (count $candidates) -eq 1
+                set draft $candidates[1]
+            else if test (count $candidates) -gt 1
+                echo "Error: multiple draft companions were advertised; select one with --draft PATH" >&2
+                printf '  - %s\n' $candidates >&2
+                return 1
+            end
+        end
+    end
+
+    # Older servers flatten companion paths to bare filenames, and both the menu
+    # and --draft accept them; the registration needs the repository path so the
+    # draft is not silently missed.
+    if test -n "$draft"; and not string match -q '*/*' -- "$draft"; and test "$source" = huggingface
+        set -l resolved (__pull_resolve_hf_companion "$checkpoint" "$draft")
+        if test -z "$resolved"
+            echo "Error: could not resolve the repository path for draft '$draft'." >&2
+            echo "       Re-run with --draft PATH or --no-draft." >&2
+            return 1
+        end
+        set draft $resolved
+    end
+
     set -l suggested_name (printf '%s\n' "$variants" | jq -r '.suggested_name // empty')
     test -n "$suggested_name"; or set suggested_name (string split -r -m 1 / -- "$checkpoint")[-1]
     set -l model_name "user.$suggested_name-$variant_name"
@@ -757,37 +820,6 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
 
     if not string match -q 'user.*' -- "$model_name"
         set model_name "user.$model_name"
-    end
-
-    set -l draft
-    if set -q _flag_draft
-        set draft $_flag_draft[-1]
-    else if not set -q _flag_no_draft
-        set draft (printf '%s\n' "$variants" | jq -r --arg variant "$variant_name" '
-            [.variants[]?
-             | select((.name | ascii_downcase) == ($variant | ascii_downcase))
-             | .draft_file // empty][0] // empty' 2>/dev/null)
-
-        if test -z "$draft"
-            set -l legacy_drafts (printf '%s\n' "$variants" | jq -r '.draft_files[]?' 2>/dev/null)
-            if test (count $legacy_drafts) -eq 1
-                set draft $legacy_drafts[1]
-                if not string match -q '*/*' -- "$draft"; and test "$source" = huggingface
-                    set -l resolved (__pull_resolve_hf_companion "$checkpoint" "$draft")
-                    if test -n "$resolved"
-                        set draft $resolved
-                    else
-                        echo "Error: the server advertised draft '$draft' but did not preserve its" >&2
-                        echo "       repository path. Re-run with --draft PATH or --no-draft." >&2
-                        return 1
-                    end
-                end
-            else if test (count $legacy_drafts) -gt 1
-                echo "Error: multiple draft companions were advertised; select one with --draft PATH" >&2
-                printf '  - %s\n' $legacy_drafts >&2
-                return 1
-            end
-        end
     end
 
     set -l mmproj
