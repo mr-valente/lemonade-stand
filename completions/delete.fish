@@ -1,3 +1,5 @@
+source (builtin path dirname (status filename))/../functions/__lemonade_flm.fish
+
 function __delete_completion_port
     if set -q LEMONADE_PORT; and test -n "$LEMONADE_PORT"
         echo $LEMONADE_PORT
@@ -85,6 +87,36 @@ function __delete_completion_targets
             | @tsv' 2>/dev/null)
         set -l parts (string split \t -- $entry)
         contains -- $parts[1] $aliases; or echo $entry
+    end
+
+    # FLM reports old or partial weights as not downloaded; offer their native
+    # tags (or directory names for models no longer in either catalog).
+    set -l flm_catalog (__flm_catalog)
+    set -l known_dirs
+    if test -n "$flm_catalog"
+        for entry in (printf '%s\n' "$flm_catalog" | jq -c '.models[]')
+            set -l dirs (__flm_model_dirs "$entry")
+            test (count $dirs) -gt 0; or continue
+            set -a known_dirs $dirs
+            set -l tag (printf '%s\n' "$entry" | jq -r '.name')
+            set -l ids (printf '%s\n' "$models" | jq -r --arg tag "$tag" \
+                '.data[]? | select(.recipe == "flm" and (.checkpoints.main // .checkpoint) == $tag) | .id')
+            if test (count $ids) -eq 0
+                echo "$tag"\t'FLM weights on disk'
+            else
+                for id in $ids
+                    contains -- "$id" $aliases; or echo "$id"\t'FLM weights on disk'
+                end
+            end
+        end
+        for root in (__flm_model_roots)
+            for directory in "$root"/*
+                test -d "$directory"; or continue
+                test -L "$directory"; and continue
+                contains -- "$directory" $known_dirs; and continue
+                echo (builtin path basename "$directory")\t'leftover FLM directory'
+            end
+        end
     end
 
     # Directories an earlier delete left behind. A model that still holds files

@@ -1,3 +1,5 @@
+source (builtin path dirname (status filename))/__lemonade_flm.fish
+
 function __update_usage
     echo "Usage:"
     echo "  update <model_name> [model_name...] [options]"
@@ -6,11 +8,11 @@ function __update_usage
     echo "  update --prune"
     echo ""
     echo "Options:"
-    echo "  -a, --all         Update every model reported by check-updates"
+    echo "  -a, --all         Update pending registry and FLM models"
     echo "  -c, --check       List pending updates and exit without changing anything"
     echo "  -f, --force       Re-pull even when no update is reported, and ignore the"
     echo "                    free-space check"
-    echo "      --flm         With --all, also refresh FLM models (always forced)"
+    echo "      --flm         Include FLM updates (now included by default)"
     echo "  -n, --dry-run     Show what would be done, change nothing"
     echo "  -y, --yes         Do not prompt for confirmation"
     echo "  -p, --prune       Delete superseded weights after a successful update"
@@ -19,7 +21,8 @@ function __update_usage
     echo ""
     echo "Models are upgraded in place through the enhanced 'pull' function. Registered"
     echo "multi-checkpoint definitions (including MTP drafts) are preserved, and the new"
-    echo "revision only replaces the old one after every checkpoint downloads successfully."
+    echo "registry revision only replaces the old one after every checkpoint downloads successfully."
+    echo "FLM updates use its own in-place downloader and compatibility checks."
 end
 
 # ---------------------------------------------------------------------------
@@ -114,7 +117,7 @@ function __update_inventory
     set -l payload (__update_api GET "/api/v1/models?show_all=true" "" 120)
     or return 1
 
-    echo $payload | jq -r '.data[]? | [.id, (.recipe // ""), (.downloaded | tostring), ((.size // 0) | tostring)] | @tsv'
+    echo $payload | jq -r '.data[]? | [.id, (.recipe // ""), (.downloaded | tostring), ((.size // 0) | tostring), (.checkpoints.main // .checkpoint // "")] | @tsv'
 end
 
 function __update_field --argument-names inventory_line index
@@ -419,15 +422,15 @@ end
 
 function update --description 'Update downloaded Lemonade models to their latest upstream revision'
     argparse -n update \
-        'a/all' \
-        'c/check' \
-        'f/force' \
-        'flm' \
-        'n/dry-run' \
-        'y/yes' \
-        'p/prune' \
-        'no-reload' \
-        'h/help' \
+        a/all \
+        c/check \
+        f/force \
+        flm \
+        n/dry-run \
+        y/yes \
+        p/prune \
+        no-reload \
+        h/help \
         -- $argv
     or return
 
@@ -501,6 +504,24 @@ function update --description 'Update downloaded Lemonade models to their latest
         return $status
     end
 
+    # FLM marks outdated weights as downloaded=false. Keep the recipe/checkpoint
+    # mapping from Lemonade, but use FLM's local compatibility check for status.
+    set -l flm_status '{"models":[]}'
+    set -l needs_flm false
+    for line in $inventory
+        test (__update_field "$line" 2) = flm; or continue
+        if set -q _flag_all; or set -q _flag_check; or contains -- (__update_field "$line" 1) $argv
+            set needs_flm true
+        end
+    end
+    if test "$needs_flm" = true
+        set flm_status (__flm_status)
+        if test $status -ne 0
+            echo "Error: could not read FLM model status. Run 'flm list' to inspect it." >&2
+            return 1
+        end
+    end
+
     # ---- validate the requested names before touching the network ---------
     set -l requested
     set -l requested_recipes
@@ -522,7 +543,18 @@ function update --description 'Update downloaded Lemonade models to their latest
 
         set -l recipe (__update_field $line 2)
 
-        if test (__update_field $line 3) != true
+        if test "$recipe" = flm
+            set -l state (printf '%s\n' "$flm_status" | jq -r --arg checkpoint (__update_field "$line" 5) \
+                '[.models[] | select(.name == $checkpoint)][0].state // "unknown"')
+            switch "$state"
+                case missing
+                    echo "Error: '$name' is not installed in FLM. Use 'pull $name' to install it." >&2
+                    return 1
+                case incompatible unknown
+                    echo "Error: FLM reports '$state' for '$name'. Inspect 'flm list'; a newer FLM backend may be required." >&2
+                    return 1
+            end
+        else if test (__update_field $line 3) != true
             echo "Error: '$name' is not downloaded. Use 'lm pull $name' to install it." >&2
             return 1
         end
@@ -574,31 +606,39 @@ function update --description 'Update downloaded Lemonade models to their latest
         set pending (echo $payload | jq -r '.models[]?' | sort)
     end
 
+    set -l flm_unchecked
+    for line in $inventory
+        test (__update_field "$line" 2) = flm; or continue
+        test "$needs_flm" = true; or continue
+        set -l name (__update_field "$line" 1)
+        if not set -q _flag_all; and not set -q _flag_check; and not contains -- "$name" $requested
+            continue
+        end
+        set -l state (printf '%s\n' "$flm_status" | jq -r --arg checkpoint (__update_field "$line" 5) \
+            '[.models[] | select(.name == $checkpoint)][0].state // "unknown"')
+        switch "$state"
+            case outdated
+                contains -- "$name" $pending; or set -a pending "$name"
+            case incompatible unknown
+                set -a flm_unchecked "$name ($state; inspect flm list and the installed FLM backend)"
+        end
+    end
+    for note in $flm_unchecked
+        echo "FLM status unresolved: $note" >&2
+    end
+
     if set -q _flag_check
-        if test (count $pending) -eq 0
+        if test (count $pending) -eq 0; and test (count $flm_unchecked) -eq 0
             echo "All downloaded models are up to date."
-        else
+        else if test (count $pending) -gt 0
             echo "Updates available for "(count $pending)" model(s):"
             for name in $pending
                 echo "  - $name"
             end
-            echo ""
             echo "Run 'update --all' to update them."
         end
-
-        set -l flm_models (__update_flm_models $inventory)
-        if test (count $flm_models) -gt 0
-            echo ""
-            echo "Not covered by the update check (FLM models are managed by the flm CLI,"
-            echo "which cannot report whether a newer revision exists):"
-            for name in $flm_models
-                echo "  - $name"
-            end
-            echo ""
-            echo "Run 'update --all --flm' or 'update <name>' to force a refresh."
-        end
-
-        return 0
+        test (count $flm_unchecked) -eq 0
+        return $status
     end
 
     # ---- build the target list --------------------------------------------
@@ -607,24 +647,12 @@ function update --description 'Update downloaded Lemonade models to their latest
     if set -q _flag_all
         set targets $pending
 
-        if set -q _flag_flm
-            for name in (__update_flm_models $inventory)
-                contains -- $name $targets; or set -a targets $name
-            end
-        end
     else
         for index in (seq (count $requested))
             set -l name $requested[$index]
 
-            if test "$requested_recipes[$index]" = flm
-                # check-updates deliberately ignores FLM: the flm CLI cannot say
-                # whether a newer revision exists, so asking for one is a force.
-                set -a targets $name
-                continue
-            end
-
-            if test $checked = true; and not set -q _flag_force
-                if not contains -- $name $pending
+            if test $checked = true; or test "$requested_recipes[$index]" = flm
+                if not set -q _flag_force; and not contains -- $name $pending
                     set -a skipped "$name (already up to date, use --force to re-pull)"
                     continue
                 end
@@ -639,10 +667,11 @@ function update --description 'Update downloaded Lemonade models to their latest
     end
 
     if test (count $targets) -eq 0
-        if set -q _flag_all; and test $checked = true
+        if set -q _flag_all; and test $checked = true; and test (count $flm_unchecked) -eq 0
             echo "All downloaded models are up to date."
         end
-        return 0
+        test (count $flm_unchecked) -eq 0
+        return $status
     end
 
     # ---- preview ----------------------------------------------------------
@@ -665,7 +694,8 @@ function update --description 'Update downloaded Lemonade models to their latest
 
         set -l note ""
         if test "$recipe" = flm
-            set note "  (FLM: forced re-download, cannot be version checked)"
+            set note "  (FLM compatibility update)"
+            set -q _flag_force; and set note "  (FLM: forced refresh)"
         else
             set total_gb (math "$total_gb + $size")
         end
@@ -761,7 +791,21 @@ function update --description 'Update downloaded Lemonade models to their latest
         # snapshot that other models still need can be reclaimed afterwards.
         set -l before (__update_model_files $name)
 
-        if __update_pull $name
+        __update_pull $name
+        set -l pull_status $status
+        if test $pull_status -eq 0
+            for line in $inventory
+                test (__update_field "$line" 1) = "$name"; or continue
+                test (__update_field "$line" 2) = flm; or continue
+                set -l refreshed (__flm_status)
+                if test $status -ne 0; or not printf '%s\n' "$refreshed" | jq -e --arg cp (__update_field "$line" 5) \
+                        'any(.models[]; .name == $cp and .state == "ready")' >/dev/null 2>&1
+                    echo "  FLM did not confirm current, complete weights after the pull." >&2
+                    set pull_status 1
+                end
+            end
+        end
+        if test $pull_status -eq 0
             set -a updated $name
 
             set -l after (__update_model_files $name)
@@ -787,7 +831,7 @@ function update --description 'Update downloaded Lemonade models to their latest
                 end
             end
         else
-            echo "  Update failed; the previously downloaded revision is untouched." >&2
+            echo "  Update failed; inspect the model status before retrying." >&2
             set -a failed $name
         end
     end
@@ -832,7 +876,8 @@ function update --description 'Update downloaded Lemonade models to their latest
         echo "     Run 'update --prune' to reclaim that space."
     end
 
-    return 0
+    test (count $flm_unchecked) -eq 0
+    return $status
 end
 
 # Shared by --prune and prune-only.
@@ -879,14 +924,4 @@ function __update_run_prune --argument-names dry_run assume_yes
     set -l removed (__update_prune_apply $plan)
     echo "Reclaimed "(__update_human_size $bytes)" ($removed path(s) removed)."
     return 0
-end
-
-# FLM models that are installed. They live outside user_models.json and are
-# discovered by lemond from 'flm list --json'.
-function __update_flm_models
-    for line in $argv
-        test (__update_field $line 2) = flm; or continue
-        test (__update_field $line 3) = true; or continue
-        __update_field $line 1
-    end
 end

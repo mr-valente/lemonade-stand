@@ -68,6 +68,9 @@ COPY functions/ /root/.config/fish/functions/
 # Copy fish completions
 COPY completions/ /root/.config/fish/completions/
 
+# Discover backend and ROCm tools when Fish starts and after backend installs.
+COPY conf.d/ /root/.config/fish/conf.d/
+
 # Copy startup wrapper and nputop.py, then make them executable
 COPY entrypoint.sh /opt/bin/lemonade-entrypoint
 COPY utils/nputop.py /opt/nputop.py

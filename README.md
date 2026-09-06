@@ -83,6 +83,47 @@ load user.Qwen3.8-27B-GGUF-UD-Q4_K_XL      # load the registered model
 unload user.Qwen3.8-27B-GGUF-UD-Q4_K_XL    # free the model
 ```
 
+Backend executables are added to `PATH` automatically in Fish, including FLM,
+llama.cpp, Whisper, Stable Diffusion, and installed ROCm utilities. The list
+refreshes at each prompt, so newly installed backends appear in an open shell.
+Among managed binaries, the configured backend takes precedence; existing system
+PATH entries retain their priority. Use `type -a llama-server` to see alternatives.
+
+```fish
+backend-path --list       # refresh and show the added directories
+flm list
+llama-server --version
+```
+
+### Inspecting ROCm
+
+Run `versions` for a combined inventory of backend package versions, every
+installed backend variant, ROCm runtimes, and executable paths. It reads local
+`version.txt` and `versions.txt` markers (including multiline build details),
+so ROCm llama.cpp release tags are preserved even when `llama-server --version`
+reports a different upstream build number. Missing backend families are listed
+too; directories without version markers are reported as unknown. The inventory
+describes packages on disk, not versions of already-running processes.
+
+These commands are available in Fish when the installed runtime supplies them;
+`rocm-info` is a helper included with this image.
+
+| Command | What it tells you |
+| --- | --- |
+| `rocm-info` | Installed ROCm runtime versions, locations, and available diagnostic binaries. Start here. |
+| `hipconfig --version` | HIP version for the installation selected by `PATH`; `hipconfig --full` shows its configuration. |
+| `rocminfo` | Devices visible to the HSA runtime and their GPU architecture identifiers, such as `gfx1151`. |
+| `amd-smi --help` | Available AMD GPU monitoring commands for utilization, memory, temperature, and other supported metrics. |
+| `rocm-smi --help` | Available commands for the older ROCm GPU monitoring utility. |
+| `rocm-sdk --help` | Options for inspecting the wheel-based ROCm SDK, when installed. |
+
+Lemonade downloads ROCm/TheRock on demand; the image does not install one global
+ROCm SDK. Multiple runtime versions may coexist, including a separate vLLM
+bundle. `rocm-info` reports their version markers and paths; `hipconfig` alone
+reports the first tool on PATH, not necessarily the runtime every backend uses.
+`LEMONADE_BACKEND_DIR` overrides the discovered backend cache directory.
+The shell setup does not mix their `LD_LIBRARY_PATH` or Python environments.
+
 ## Managing models
 
 ### Pulling
@@ -114,18 +155,28 @@ path prevents the draft from being silently missed. Use `--no-draft` or
 `--no-mmproj` to opt out, or `--draft PATH` / `--mmproj PATH` to override the
 automatic choice.
 
-To repair an already-registered custom model whose original registration has no
-draft checkpoint, use its public (bare) name or its internal `user.*` name:
+To add or replace an already-registered custom model's draft checkpoint, use its
+public (bare) name or its internal `user.*` name:
 
 ```fish
-pull --repair-mtp Qwen3.8-27B-GGUF-UD-Q4_K_XL --yes
+# Choose a draft interactively; Enter keeps an existing draft
+pull --repair-mtp Qwen3.8-27B-GGUF-UD-Q4_K_XL
+
+# Explicit replacement, without prompting
+pull --repair-mtp gemma-4-12B-it-qat-GGUF-UD-Q4_K_XL \
+  --draft MTP/mtp-gemma-4-12B-it-Q4_0.gguf --yes
 ```
 
 The repair inspects that model's saved repository and quant, adds the matching
-MTP checkpoint while preserving its recipe options, then downloads it. The old
-registration is restored automatically if the download fails. After a
-successful repair, ordinary `update` runs refresh the MTP alongside the main
-checkpoint.
+MTP checkpoint while preserving its recipe options, then downloads it. `--yes`
+alone refreshes an existing draft; it never chooses a replacement automatically.
+Replacing a draft unloads the model and leaves it ready to load with the new
+draft. The old registration is restored automatically if the download fails,
+and the old files stay in place. After success, only the previous draft's resolved
+cache files are deleted, and files still referenced by another model are kept.
+If reference checks fail, cleanup is skipped and the command reports that the
+replacement succeeded but old files may remain. Ordinary `update` runs refresh
+the selected MTP alongside the main checkpoint.
 
 ### Loading
 
@@ -173,7 +224,7 @@ update --all
 update --all --prune
 ```
 
-Models are upgraded **in place**: `update` re-pulls the model under its existing
+Registry models are upgraded **in place**: `update` re-pulls the model under its existing
 registration, so the new revision is downloaded alongside the old one and the
 server only switches over once it is complete. Nothing is deleted first, so a
 failed or interrupted download always leaves the working model intact — and the
@@ -190,10 +241,10 @@ running backend keeps serving the old weights — and reloaded afterwards. Pass
 
 | Option | Description |
 | :--- | :--- |
-| `-a`, `--all` | Update every model reported by `check-updates`. |
+| `-a`, `--all` | Update pending registry and FLM models. |
 | `-c`, `--check` | List pending updates and exit. |
 | `-f`, `--force` | Re-pull even when no update is reported, and ignore the free-space check. |
-| `--flm` | With `--all`, also refresh FLM models. |
+| `--flm` | Compatibility option; FLM updates are now included by default. |
 | `-n`, `--dry-run` | Show what would be done, change nothing. |
 | `-y`, `--yes` | Do not prompt for confirmation. |
 | `-p`, `--prune` | Delete superseded weights after a successful update. |
@@ -201,15 +252,24 @@ running backend keeps serving the old weights — and reloaded afterwards. Pass
 
 #### FLM models
 
-FLM (NPU) models are managed by the `flm` CLI rather than the HuggingFace cache,
-and Lemonade's update check skips them — `flm` cannot report whether a newer
-revision exists. They are therefore never included in `update --all` unless you
-ask for them, and updating one is always an unconditional re-download:
+FLM (NPU) models use their own storage and downloader. `update --check` and
+`update --all` now include models whose `flm list` output says the local version
+is below the catalog requirement (`Local model ... version: ... < ...`). These
+can appear as `downloaded: false` in Lemonade even though their weights exist.
+Current FLM models are skipped unless explicitly forced. A `>` warning means
+the FLM backend needs updating; it does not trigger a model re-download.
+This checks FLM compatibility requirements, not arbitrary upstream file changes.
 
 ```fish
-update --all --flm          # everything, FLM models included
-update llama3.2-1b-FLM      # just this one
+update --check
+update --all
+update gemma4-it-e2b-FLM
+update gemma4-it-e4b-FLM --force  # explicitly refresh current weights
 ```
+
+FLM updates files in place and does not provide the registry downloader's
+snapshot rollback guarantee. The function rechecks FLM after a successful pull
+and reports failure if the model is still outdated or incomplete.
 
 #### Reclaiming disk space
 
@@ -262,6 +322,20 @@ still claimed is refused, with the model to delete instead named in the error. A
 directory named on the command line is the request itself rather than extra
 tidying, so `--no-cleanup` does not hold it back.
 
+FLM cleanup also covers outdated, partial, and unregistered weights under
+`/root/.config/flm/models` (or the configured `FLM_MODEL_PATH` / XDG locations).
+It maps Lemonade's `recipe: flm` and checkpoint to FLM's catalog, then removes
+only the planned model directory after native deletion succeeds. Nested files
+are included; directories shared by other registrations and symlinks are
+protected. If the registry cannot be checked, cleanup is skipped with an error.
+
+```fish
+delete --dry-run gemma4-it-e2b-FLM
+delete --yes gemma4-it:e2b        # native FLM checkpoint tag
+# A leftover directory can also be named, even after catalog removal:
+delete --dry-run LFM2-2.6B-NPU2
+```
+
 Collections are deliberately not cascade-deleted: deleting a collection removes
 the collection entry, while its components stay installed. Name those component
 models explicitly if they should also be deleted.
@@ -273,8 +347,8 @@ The model-management functions support tab completion:
 - `pull` + Tab — shows registered models; `--quant`, `--draft`, and `--mmproj` complete from repository inspection.
 - `load` + Tab — shows all models known to the server plus set names from `model_sets.json`.
 - `unload` + Tab — shows only the currently loaded models.
-- `update` + Tab — shows only the downloaded models.
-- `delete` + Tab — shows downloaded models, removable `user.*` registrations, and leftover cache directories that no model claims.
+- `update` + Tab — shows downloaded models, including outdated FLM models.
+- `delete` + Tab — shows downloaded models, removable `user.*` registrations, and leftover Hugging Face/FLM model directories.
 
 ### Model sets
 

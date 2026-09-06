@@ -12,12 +12,15 @@ function __pull_usage
     echo "      --no-mmproj          Do not install an advertised projector"
     echo "      --source <source>    huggingface or modelscope"
     echo "      --alias <name>       Register an alias after a successful pull"
-    echo "  -r, --repair-mtp         Add and download the advertised MTP draft for an existing custom model"
+    echo "  -r, --repair-mtp         Add, refresh, or replace an existing custom model's MTP draft"
     echo "  -y, --yes                Use the recommended variant and default name"
     echo "  -h, --help               Show this help"
     echo ""
     echo "Draft and projector companions are included automatically. Explicit paths"
     echo "are relative to the model repository, for example MTP/mtp-model-Q4_0.gguf."
+    echo "With --repair-mtp, choose a replacement interactively or with --draft PATH."
+    echo "--yes keeps an existing draft unless --draft is specified. A replacement"
+    echo "unloads the model and deletes the old draft only after success, if unshared."
 end
 
 function __pull_port
@@ -145,7 +148,9 @@ function __pull_prompt_variant --argument-names variants
         return 1
     end
 
-    echo "Select a main GGUF variant:"
+    # This function runs in a command substitution: only the selection belongs
+    # on stdout, otherwise the menu becomes part of the checkpoint and name.
+    echo "Select a main GGUF variant:" >&2
     set -l visible (count $entries)
     if test $visible -gt 5
         set visible 5
@@ -153,10 +158,10 @@ function __pull_prompt_variant --argument-names variants
 
     for index in (seq $visible)
         set -l parts (string split \t -- $entries[$index])
-        printf '  %d) %-18s %s\n' $index $parts[1] (__pull_human_size $parts[2])
+        printf '  %d) %-18s %s\n' $index $parts[1] (__pull_human_size $parts[2]) >&2
     end
     if test (count $entries) -gt $visible
-        echo "  ... "(math (count $entries) - $visible)" more; type any variant name"
+        echo "  ... "(math (count $entries) - $visible)" more; type any variant name" >&2
     end
 
     read -l -P "Variant [1]: " answer
@@ -257,7 +262,124 @@ function __pull_refresh_registered --argument-names model_name
     end
 end
 
-function __pull_repair_mtp --argument-names requested_name assume_yes
+function __pull_draft_candidates --argument-names variants preferred
+    printf '%s\n' "$variants" | jq -r --arg preferred "$preferred" '
+        . as $variants
+        |
+        ([$preferred] + [.variants[]?.draft_file])
+        | map(select(. != null and . != "")) as $paths
+        | ($paths + [$variants.draft_files[]?
+            | . as $file
+            | select(all($paths[]; . != $file and (endswith("/" + $file) | not)))])
+        | reduce .[] as $path ([]; if index($path) then . else . + [$path] end)
+        | .[]' 2>/dev/null
+end
+
+function __pull_prompt_draft --argument-names existing_draft
+    set -l candidates $argv[2..-1]
+    set -l default 1
+    echo "Select an MTP/draft companion:" >&2
+    if test -n "$existing_draft"
+        echo "  0) Keep and refresh $existing_draft" >&2
+        set default 0
+    end
+    for index in (seq (count $candidates))
+        printf '  %d) %s\n' $index $candidates[$index] >&2
+    end
+    read -l -P "Draft [$default]: " answer
+    or return 1
+    test -n "$answer"; or set answer $default
+    if test "$answer" = 0; and test -n "$existing_draft"
+        echo $existing_draft
+    else if string match -qr '^[0-9]+$' -- "$answer"
+        if test "$answer" -lt 1; or test "$answer" -gt (count $candidates)
+            echo "Error: draft selection is out of range." >&2
+            return 1
+        end
+        echo $candidates[$answer]
+    else if contains -- "$answer" $candidates
+        echo $answer
+    else
+        echo "Error: choose a listed draft number or path." >&2
+        return 1
+    end
+end
+
+function __pull_model_files --argument-names model_name
+    set -l encoded (string escape --style=url -- "$model_name")
+    set -l payload (__pull_api GET "/api/v1/models/$encoded/files?include_paths=true" '' 60)
+    or return 1
+    # An unavailable or malformed file list must never mean "nothing uses it".
+    printf '%s\n' "$payload" | jq -ce '
+        select((.files | type) == "array")
+        | select(all(.files[]; (.path | type) == "string" and .path != ""
+            and (.role | type) == "string"))' 2>/dev/null
+end
+
+function __pull_cleanup_replaced_draft --argument-names model_name existing_draft old_files
+    # Reuse only the exact-file cleanup primitives, never model/repo deletion or
+    # global cache pruning. Refresh every reference before touching the old file.
+    source (path dirname (status filename))/delete.fish
+    or return 1
+    set -l inventory (__pull_api GET '/api/v1/models?show_all=true' '' 120)
+    or return 1
+    printf '%s\n' "$inventory" | jq -e --arg model "$model_name" '
+        (.data | type) == "array"
+        and any(.data[]; .id == $model or .id == ($model | ltrimstr("user.")))
+        and all(.data[]; (.id | type) == "string" and .id != ""
+            and ((.checkpoints // {}) | type) == "object")' >/dev/null 2>&1
+    or return 1
+    if printf '%s\n' "$inventory" | jq -e --arg draft "$existing_draft" '
+        any(.data[]; any((.checkpoints // {})[]; . == $draft) or .checkpoint == $draft)' >/dev/null 2>&1
+        echo "Kept the previous draft: a registered model still references it."
+        return 0
+    end
+
+    set -l keep_paths
+    set -l model_names $model_name (printf '%s\n' "$inventory" | jq -r '.data[].id')
+    for name in $model_names
+        set -l files (__pull_model_files "$name")
+        or return 1
+        for filename in (printf '%s\n' "$files" | jq -r '.files[].path')
+            set -a keep_paths "$filename" (path resolve "$filename")
+            for sibling in (__delete_shard_siblings "$filename")
+                set -a keep_paths "$sibling" (path resolve "$sibling")
+            end
+        end
+    end
+
+    set -l records
+    set -l old_paths (printf '%s\n' "$old_files" | jq -r '.files[] | select(.role == "draft") | .path')
+    for filename in $old_paths
+        set -l repo_dir (__delete_repo_dir "$filename")
+        or return 1
+        # Reject traversal and parent-directory symlinks before filesystem cleanup.
+        test (path resolve (path dirname "$filename")) = (path dirname "$filename")
+        or return 1
+        for candidate in "$filename" (__delete_shard_siblings "$filename")
+            if contains -- "$candidate" $keep_paths; or contains -- (path resolve "$candidate") $keep_paths
+                echo "Kept the previous draft: its files are still shared."
+                return 0
+            end
+            for keep in $keep_paths
+                if test -d "$keep"; and string match -qr -- '^'(string escape --style=regex "$keep")/ "$candidate" (path resolve "$candidate")
+                    echo "Kept the previous draft: another model uses its directory."
+                    return 0
+                end
+            end
+        end
+        set -a records "$model_name"\tdraft\t"$filename"\t0
+    end
+    __delete_remove_shared_leftovers $records --successful "$model_name" --keep $keep_paths
+    for filename in $old_paths
+        if test -e "$filename"; or test -L "$filename"
+            return 1
+        end
+    end
+    return 0
+end
+
+function __pull_repair_mtp --argument-names requested_name assume_yes requested_draft
     # Lemonade emits the public name of a regular registered model without the
     # internal `user.` prefix. Resolve a bare name back to its user registration;
     # never treat a built-in or extra model as a replaceable definition.
@@ -290,7 +412,7 @@ function __pull_repair_mtp --argument-names requested_name assume_yes
     set -l checkpoint
     set -l variant
 
-    if test -n "$draft"
+    if test -n "$draft"; and test "$assume_yes" = true; and test -z "$requested_draft"
         echo "The model already has a draft checkpoint registered; refreshing it."
     else
         if not string match -qr '^[^/]+/[^/:]+:.+$' -- "$main"
@@ -312,45 +434,73 @@ function __pull_repair_mtp --argument-names requested_name assume_yes
                 return 1
         end
 
-        set -l encoded_checkpoint (string escape --style=url -- "$checkpoint")
-        set -l variants (__pull_api GET "/api/v1/pull/variants?checkpoint=$encoded_checkpoint&source=$source" '' 180)
-        if test $status -ne 0
-            echo "Error: could not inspect '$checkpoint': "(__pull_api_error "$variants") >&2
-            return 1
-        end
+        if test -n "$requested_draft"
+            set draft $requested_draft
+        else
+            set -l encoded_checkpoint (string escape --style=url -- "$checkpoint")
+            set -l variants (__pull_api GET "/api/v1/pull/variants?checkpoint=$encoded_checkpoint&source=$source" '' 180)
+            if test $status -ne 0
+                echo "Error: could not inspect '$checkpoint': "(__pull_api_error "$variants") >&2
+                return 1
+            end
 
-        set -l variant_name (__pull_variant_name "$variants" "$variant")
-        if test -z "$variant_name"
-            echo "Error: the registered variant '$variant' is not advertised by '$checkpoint'." >&2
-            return 1
-        end
+            set -l variant_name (__pull_variant_name "$variants" "$variant")
+            if test -z "$variant_name"
+                echo "Error: the registered variant '$variant' is not advertised by '$checkpoint'." >&2
+                return 1
+            end
 
-        set draft (printf '%s\n' "$variants" | jq -r --arg variant "$variant_name" '
+            set draft (printf '%s\n' "$variants" | jq -r --arg variant "$variant_name" '
             [.variants[]?
              | select((.name | ascii_downcase) == ($variant | ascii_downcase))
-             | .draft_file // empty][0] // empty' 2>/dev/null)
-        if test -z "$draft"
-            set -l legacy_drafts (printf '%s\n' "$variants" | jq -r '.draft_files[]?' 2>/dev/null)
-            if test (count $legacy_drafts) -eq 1
-                set draft $legacy_drafts[1]
-                if not string match -q '*/*' -- "$draft"; and test "$source" = huggingface
-                    set draft (__pull_resolve_hf_companion "$checkpoint" "$draft")
-                    if test -z "$draft"
-                        echo "Error: could not resolve the repository path for the advertised MTP draft." >&2
-                        return 1
+            | .draft_file // empty][0] // empty' 2>/dev/null)
+            set -l candidates (__pull_draft_candidates "$variants" "$draft")
+            if test -n "$existing_draft"
+                set -l alternatives
+                for candidate in $candidates
+                    # Legacy servers flatten companion paths to basenames.
+                    if test "$checkpoint:$candidate" = "$existing_draft"
+                        continue
                     end
+                    if string match -q "$checkpoint:*" -- "$existing_draft"; and not string match -q '*/*' -- "$candidate"; and test "$candidate" = (path basename "$existing_draft")
+                        continue
+                    end
+                    set -a alternatives "$candidate"
                 end
-            else if test (count $legacy_drafts) -gt 1
-                echo "Error: multiple MTP drafts are advertised; use an explicit registration instead." >&2
-                return 1
+                set candidates $alternatives
+                set draft $existing_draft
+            end
+            if test "$assume_yes" != true; and isatty stdin; and test (count $candidates) -gt 0
+                set draft (__pull_prompt_draft "$existing_draft" $candidates)
+                or return 1
+            else if test -z "$draft"
+                if test (count $candidates) -eq 1
+                    set draft $candidates[1]
+                else if test (count $candidates) -gt 1
+                    echo "Error: multiple MTP drafts are advertised; select one with --draft PATH." >&2
+                    return 1
+                end
             end
         end
 
         if test -z "$draft"
-            echo "Error: no MTP/draft companion is advertised for '$variant_name'." >&2
+            echo "Error: no MTP/draft companion is advertised for '$variant'." >&2
             return 1
         end
-        set draft "$checkpoint:$draft"
+        if test "$draft" != "$existing_draft"
+            if not string match -qr '(?i)^[^/:]+(/[^/:]+)*\.gguf$' -- "$draft"; or string match -qr '(^|/)\.\.?(/|$)' -- "$draft"
+                echo "Error: --draft must be a repository-relative GGUF path." >&2
+                return 1
+            end
+            if not string match -q '*/*' -- "$draft"; and test "$source" = huggingface
+                set draft (__pull_resolve_hf_companion "$checkpoint" "$draft")
+                if test -z "$draft"
+                    echo "Error: could not resolve the repository path for the selected MTP draft; use --draft with its full relative path." >&2
+                    return 1
+                end
+            end
+            set draft "$checkpoint:$draft"
+        end
     end
 
     set -l original_registration (__pull_registration_payload "$model_json" "$model_name" '')
@@ -366,6 +516,18 @@ function __pull_repair_mtp --argument-names requested_name assume_yes
         echo "  registration: $model_name"
     end
     echo "  draft:   $draft"
+    set -l replacing false
+    set -l old_files
+    if test -n "$existing_draft"; and test "$draft" != "$existing_draft"
+        set replacing true
+        echo "  replaces: $existing_draft"
+        echo "The model will be unloaded. The old draft will be deleted after success if no other model uses it."
+        set old_files (__pull_model_files "$model_name")
+        if test $status -ne 0
+            echo "Error: could not inspect the existing draft files; nothing changed." >&2
+            return 1
+        end
+    end
     echo "The existing registration will be backed up in memory and restored if the pull fails."
 
     if test "$assume_yes" != true
@@ -373,10 +535,19 @@ function __pull_repair_mtp --argument-names requested_name assume_yes
             echo "Error: refusing a non-interactive repair without --yes." >&2
             return 1
         end
-        read -l -P "Add and download this MTP draft? [y/N] " answer
+        read -l -P "Apply and download this MTP draft? [y/N] " answer
         if not string match -qir '^y(es)?$' -- "$answer"
             echo "Kept."
             return 0
+        end
+    end
+
+    if test "$replacing" = true
+        set -l body (jq -nc --arg model "$model_name" '{model_name: $model}')
+        set -l unloaded (__pull_api POST /api/v1/unload "$body" 120)
+        if test $status -ne 0; or not printf '%s\n' "$unloaded" | jq -e '.status == "success"' >/dev/null 2>&1
+            echo "Error: could not unload the model; its registration and old draft were kept." >&2
+            return 1
         end
     end
 
@@ -390,6 +561,12 @@ function __pull_repair_mtp --argument-names requested_name assume_yes
     set -l pull_status $status
     if test $pull_status -eq 0
         echo "MTP draft installed for $model_name."
+        if test "$replacing" = true
+            if not __pull_cleanup_replaced_draft "$model_name" "$existing_draft" "$old_files"
+                echo "Warning: replacement succeeded, but old-draft cleanup could not be completed safely; old files may remain." >&2
+                return 1
+            end
+        end
         return 0
     end
 
@@ -432,8 +609,12 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
 
     set -l model_arg $argv[1]
     if set -q _flag_repair_mtp
-        if set -q _flag_quant; or set -q _flag_name; or set -q _flag_draft; or set -q _flag_no_draft; or set -q _flag_mmproj; or set -q _flag_no_mmproj; or set -q _flag_source; or set -q _flag_alias
-            echo "Error: --repair-mtp is used by itself with an existing custom model." >&2
+        if set -q _flag_quant; or set -q _flag_name; or set -q _flag_no_draft; or set -q _flag_mmproj; or set -q _flag_no_mmproj; or set -q _flag_source; or set -q _flag_alias
+            echo "Error: --repair-mtp accepts only --draft and --yes with an existing custom model." >&2
+            return 1
+        end
+        if set -q _flag_draft; and test -z "$_flag_draft"
+            echo "Error: --draft requires a repository-relative GGUF path." >&2
             return 1
         end
         for tool in curl jq
@@ -444,7 +625,7 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
         end
         set -l assume_yes false
         set -q _flag_yes; and set assume_yes true
-        __pull_repair_mtp "$model_arg" "$assume_yes"
+        __pull_repair_mtp "$model_arg" "$assume_yes" "$_flag_draft"
         return $status
     end
 

@@ -68,16 +68,30 @@ function __pull_completion_drafts
     set -l checkpoint (__pull_completion_checkpoint)
     test -n "$checkpoint"; or return
 
+    set -l source
+    if not string match -q '*/*' -- "$checkpoint"
+        set -l model_name $checkpoint
+        string match -q 'user.*' -- "$model_name"; or set model_name "user.$model_name"
+        set -l encoded_model (string escape --style=url -- "$model_name")
+        set -l model (__pull_completion_api "/api/v1/models/$encoded_model")
+        set checkpoint (printf '%s\n' "$model" | jq -r '.checkpoints.main // .checkpoint // empty' 2>/dev/null)
+        set source (printf '%s\n' "$model" | jq -r '.registry_source // .source // empty' 2>/dev/null)
+    end
     set checkpoint (string replace -r ':[^:]+$' '' -- "$checkpoint")
+    string match -q '*/*' -- "$checkpoint"; or return
     set -l encoded (string escape --style=url -- "$checkpoint")
-    __pull_completion_api "/api/v1/pull/variants?checkpoint=$encoded" |
+    set -l query "/api/v1/pull/variants?checkpoint=$encoded"
+    test -n "$source"; and set query "$query&source="(string escape --style=url -- "$source")
+    __pull_completion_api "$query" |
         jq -r '
+            . as $variants
+            |
             ([.variants[]?.draft_file]
              | map(select(. != null and . != "")) | unique) as $resolved
-            | if ($resolved | length) > 0
-              then $resolved[]
-              else .draft_files[]?
-              end' 2>/dev/null
+            | ($resolved + [$variants.draft_files[]?
+                | . as $file
+                | select(all($resolved[]; . != $file and (endswith("/" + $file) | not)))])
+            | unique[]' 2>/dev/null
 end
 
 function __pull_completion_mmproj
@@ -103,7 +117,7 @@ complete -c pull -l mmproj -r -f -a '(__pull_completion_mmproj)' -d 'Multimodal 
 complete -c pull -l no-mmproj -d 'Do not install the advertised projector'
 complete -c pull -l source -r -f -a 'huggingface modelscope' -d 'Remote model registry'
 complete -c pull -l alias -r -f -d 'Alias to register after pulling'
-complete -c pull -s r -l repair-mtp -d 'Add and download an MTP draft for an existing custom model'
+complete -c pull -s r -l repair-mtp -d 'Add, refresh, or replace a custom model’s MTP draft'
 complete -c pull -s y -l yes -d 'Use recommended defaults without prompting'
 complete -c pull -s h -l help -d 'Show usage'
 complete -c pull -f -a '(__pull_completion_models)'

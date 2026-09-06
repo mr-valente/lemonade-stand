@@ -1,3 +1,5 @@
+source (builtin path dirname (status filename))/__lemonade_flm.fish
+
 function __delete_usage
     echo "Usage:"
     echo "  delete <target> [target...] [options]"
@@ -6,6 +8,8 @@ function __delete_usage
     echo "  A model name, or a leftover cache directory that no model claims."
     echo "  Name such a directory either by repository ('unsloth/Model-GGUF') or"
     echo "  by directory ('models--unsloth--Model-GGUF')."
+    echo "  FLM targets also accept native tags ('gemma4-it:e2b') or directory"
+    echo "  names ('Gemma4-E2B-IT-NPU2'), including outdated or orphaned weights."
     echo ""
     echo "Options:"
     echo "  -n, --dry-run      Show models and files without deleting anything"
@@ -425,6 +429,35 @@ function __delete_remove_shared_leftovers
     end
 end
 
+# Is this FLM directory/checkpoint claimed by a model outside the selected set?
+function __delete_flm_unshared --argument-names inventory catalog checkpoint directory
+    set -l excluded $argv[5..-1]
+    printf '%s\n' "$inventory" | jq -e '(.data | type) == "array"' >/dev/null 2>&1
+    or return 1
+    for model in (printf '%s\n' "$inventory" | jq -c '.data[] | select(.recipe == "flm")')
+        set -l id (printf '%s\n' "$model" | jq -r '.id')
+        contains -- "$id" $excluded; and continue
+        set -l other_checkpoint (printf '%s\n' "$model" | jq -r '.checkpoints.main // .checkpoint // empty')
+        if test -n "$checkpoint"; and test "$other_checkpoint" = "$checkpoint"
+            echo "Error: FLM weights are still referenced by '$id'." >&2
+            return 1
+        end
+        set -l entry (printf '%s\n' "$catalog" | jq -c --arg cp "$other_checkpoint" '.models[] | select(.name == $cp)')
+        if test -z "$entry"
+            echo "Error: cannot resolve the FLM directory used by '$id'; cleanup skipped." >&2
+            return 1
+        end
+        if test -n "$entry"; and test -n "$directory"
+            set -l repo (__flm_repo_name "$entry")
+            if test "$repo" = (builtin path basename "$directory")
+                echo "Error: FLM directory is still referenced by '$id'." >&2
+                return 1
+            end
+        end
+    end
+    return 0
+end
+
 function delete --description 'Delete Lemonade models and clean their filesystem leftovers'
     argparse -n delete \
         n/dry-run \
@@ -477,6 +510,8 @@ function delete --description 'Delete Lemonade models and clean their filesystem
     set -l file_records
     set -l repo_records
     set -l orphan_records
+    set -l flm_records
+    set -l flm_catalog
     set -l total_bytes 0
     set -l aliases (__delete_api GET /internal/aliases '' 30)
     if test $status -ne 0
@@ -504,6 +539,72 @@ function delete --description 'Delete Lemonade models and clean their filesystem
 
         set -l model_json (printf '%s\n' "$inventory" | jq -c --arg model "$model_name" \
             '[.data[]? | select(.id == $model)][0] // empty' 2>/dev/null)
+        # Resolve native FLM tags and leftover model directories, including
+        # outdated models whose Lemonade downloaded flag is false.
+        set -l flm_entry
+        set -l flm_dirs
+        set -l flm_checkpoint
+        set -l flm_explicit_directory false
+        set -l recipe (printf '%s\n' "$model_json" | jq -r '.recipe // empty' 2>/dev/null)
+        if test "$recipe" = flm; or test -z "$model_json"
+            if test -z "$flm_catalog"
+                set flm_catalog (__flm_catalog)
+            end
+            if test "$recipe" = flm; and test -z "$flm_catalog"
+                echo "Error: could not inspect the FLM catalog; nothing deleted." >&2
+                return 1
+            end
+            if test -n "$flm_catalog"
+                set flm_checkpoint (printf '%s\n' "$model_json" | jq -r '.checkpoints.main // .checkpoint // empty' 2>/dev/null)
+                for entry in (printf '%s\n' "$flm_catalog" | jq -c '.models[]')
+                    set -l tag (printf '%s\n' "$entry" | jq -r '.name')
+                    if test "$tag" = "$flm_checkpoint"; or test "$tag" = "$model_name"; or test (__flm_repo_name "$entry") = "$model_name"
+                        set flm_entry "$entry"
+                        set flm_checkpoint "$tag"
+                        set flm_dirs (__flm_model_dirs "$entry")
+                        break
+                    end
+                end
+                # A directory may outlive its entry in FLM's own catalog too.
+                if test -z "$flm_entry"; and test -z "$model_json"; and string match -qr '^[A-Za-z0-9_][A-Za-z0-9_.-]*$' -- "$model_name"
+                    for root in (__flm_model_roots)
+                        test -d "$root/$model_name"; and set -a flm_dirs "$root/$model_name"
+                    end
+                end
+            end
+            if test -z "$model_json"; and test (count $flm_dirs) -gt 0; and not string match -q '*:*' -- "$model_name"
+                set flm_explicit_directory true
+            end
+            if test -z "$model_json"; and test -n "$flm_entry"
+                set -l matches (printf '%s\n' "$inventory" | jq -c --arg cp "$flm_checkpoint" \
+                    '.data[] | select(.recipe == "flm" and (.checkpoints.main // .checkpoint) == $cp)')
+                if test (count $matches) -gt 1
+                    echo "Error: multiple registrations share '$flm_checkpoint'; name the model registration to delete." >&2
+                    return 1
+                else if test (count $matches) -eq 1
+                    set model_json $matches[1]
+                    set model_name (printf '%s\n' "$model_json" | jq -r '.id')
+                end
+            end
+            if test -n "$flm_checkpoint"
+                __delete_flm_unshared "$inventory" "$flm_catalog" "$flm_checkpoint" '' $requested "$model_name"
+                or return 1
+            end
+            for directory in $flm_dirs
+                __flm_safe_dir "$directory"
+                or begin
+                    echo "Error: refusing unexpected FLM directory '$directory'." >&2
+                    return 1
+                end
+                __delete_flm_unshared "$inventory" "$flm_catalog" "$flm_checkpoint" "$directory" $requested "$model_name"
+                or return 1
+                set -a flm_records "$model_name"\t"$flm_checkpoint"\t"$directory"\t(__delete_path_bytes "$directory")\t"$flm_explicit_directory"
+            end
+            if test -z "$model_json"; and test (count $flm_dirs) -gt 0
+                continue
+            end
+        end
+
         if test -z "$model_json"
             set -l matches (__delete_cache_matches "$cache_dir" "$model_name")
             if test (count $matches) -gt 1
@@ -585,6 +686,13 @@ function delete --description 'Delete Lemonade models and clean their filesystem
         for record in $orphan_records
             set -l parts (string split \t -- "$record")
             printf '  - %s (%s)\n' (path basename "$parts[2]") (__delete_human_size $parts[3])
+        end
+    end
+    if test (count $flm_records) -gt 0
+        echo "FLM model directories to remove after deletion (including outdated/partial files):"
+        for record in $flm_records
+            set -l parts (string split \t -- "$record")
+            printf '  - %s: %s (%s)\n' "$parts[1]" "$parts[3]" (__delete_human_size "$parts[4]")
         end
     end
     if not set -q _flag_no_cleanup; and test (count $repo_records) -gt 0
@@ -713,6 +821,37 @@ function delete --description 'Delete Lemonade models and clean their filesystem
 
     # A directory named on the command line is the request itself, not extra
     # tidying, so --no-cleanup does not hold it back.
+    # FLM's native remover may leave nested or partial files. Remove only the
+    # exact directories shown in the preview, after checking remaining owners.
+    set -l removed_flm
+    if test (count $flm_records) -gt 0
+        set -l remaining (__delete_inventory)
+        if test $status -ne 0; or not printf '%s\n' "$remaining" | jq -e '(.data | type) == "array"' >/dev/null 2>&1
+            echo "Error: could not refresh inventory; FLM cleanup skipped." >&2
+            set -a failed 'FLM cleanup'
+        else
+            for record in $flm_records
+                set -l parts (string split \t -- "$record")
+                contains -- "$parts[1]" $failed; and continue
+                if set -q _flag_no_cleanup; and contains -- "$parts[1]" $model_names; and test "$parts[5]" != true
+                    continue
+                end
+                test -d "$parts[3]"; or continue
+                if not __delete_flm_unshared "$remaining" "$flm_catalog" "$parts[2]" "$parts[3]" $successful
+                    set -a failed "$parts[1]"
+                    continue
+                end
+                if __flm_safe_dir "$parts[3]"; and rm -rf -- "$parts[3]"
+                    echo "  Removed FLM directory $parts[3]."
+                    set -a removed_flm "$parts[1]"
+                else
+                    echo "Error: could not remove FLM directory '$parts[3]'." >&2
+                    set -a failed "$parts[1]"
+                end
+            end
+        end
+    end
+
     set -l removed_orphans
     for record in $orphan_records
         set -l parts (string split \t -- "$record")
@@ -732,6 +871,9 @@ function delete --description 'Delete Lemonade models and clean their filesystem
     end
     if test (count $removed_orphans) -gt 0
         echo "Removed "(count $removed_orphans)" cache directory(s): "(string join ', ' $removed_orphans)
+    end
+    if test (count $removed_flm) -gt 0
+        echo "Cleaned FLM weights: "(string join ', ' $removed_flm)
     end
     if test (count $failed) -gt 0
         echo "Failed "(count $failed)" target(s): "(string join ', ' $failed) >&2

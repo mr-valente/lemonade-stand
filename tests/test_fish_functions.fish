@@ -80,6 +80,52 @@ function __pull_resolve_hf_companion --argument-names checkpoint filename
     echo $filename
 end
 
+# Exercise the command substitution used by interactive pulls. Menu output must
+# remain visible on stderr without contaminating the selected checkpoint.
+set -l menu_output (mktemp)
+for answer in '' 1 ud-q4_k_xl
+    set -l selected (printf '%s\n' "$answer" | __pull_prompt_variant "$pull_fixture" 2>$menu_output)
+    assert_equal 0 $status 'variant prompt accepts default, index, and name'
+    assert_equal 1 (count $selected) 'variant prompt emits exactly one value'
+    assert_equal UD-Q4_K_XL "$selected" 'variant prompt returns only the canonical variant'
+end
+assert_contains 'Select a main GGUF variant:' 'variant menu is displayed on stderr' (cat $menu_output)
+for answer in 0 2 unknown
+    set -l selected (printf '%s\n' "$answer" | __pull_prompt_variant "$pull_fixture" 2>$menu_output)
+    assert_equal 1 $status 'invalid variant selection fails'
+    assert_equal 0 (count $selected) 'invalid variant selection emits no value'
+end
+set -l selected (__pull_prompt_variant "$pull_fixture" </dev/null 2>$menu_output)
+assert_equal 1 $status 'EOF cancels variant selection'
+assert_equal 0 (count $selected) 'cancelled selection emits no value'
+rm -- $menu_output
+
+# Simulate terminal input while keeping all server and download calls stubbed.
+# Multiple global drafts must not override the selected variant's draft_file.
+set -l original_fixture $pull_fixture
+set pull_fixture (printf '%s\n' "$pull_fixture" | jq -c '.draft_files += ["mtp-other-BF16.gguf"]')
+function isatty
+    return 0
+end
+functions -c __pull_prompt_variant __test_prompt_variant
+function __pull_prompt_variant --argument-names variants
+    printf '\n' | __test_prompt_variant "$variants"
+end
+set -g pull_cli_args
+set -l prompt_input (mktemp)
+printf '\n\n' >$prompt_input
+pull unsloth/Qwen3.8-27B-GGUF <$prompt_input >/dev/null 2>/dev/null
+assert_equal 0 $status 'interactive pull accepts default variant and model name'
+assert_contains 'user.Qwen3.8-27B-GGUF-UD-Q4_K_XL' 'interactive default name contains only the variant' $pull_cli_args
+assert_contains 'unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL' 'interactive main checkpoint contains only the variant' $pull_cli_args
+assert_contains 'unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf' \
+    'interactive pull resolves the variant-specific draft despite multiple global drafts' $pull_cli_args
+rm -- $prompt_input
+functions -e isatty __pull_prompt_variant
+functions -c __test_prompt_variant __pull_prompt_variant
+functions -e __test_prompt_variant
+set pull_fixture $original_fixture
+
 pull --yes --quant UD-Q4_K_XL unsloth/Qwen3.8-27B-GGUF >/dev/null
 assert_contains 'unsloth/Qwen3.8-27B-GGUF:MTP/mtp-Qwen3.8-27B-Q4_0.gguf' \
     'pull preserves the repository-relative MTP path' $pull_cli_args
@@ -414,6 +460,15 @@ assert_contains models--unsloth--Odd--Name \
 assert_not_contains datasets--foo--bar 'completion ignores non-model cache directories' $offered
 
 rm -rf -- "$cache_sandbox"
+
+fish --no-config "$repo_root/tests/test_repair_mtp.fish"
+or set -g tests_failed (math $tests_failed + 1)
+fish --no-config "$repo_root/tests/test_flm_functions.fish"
+or set -g tests_failed (math $tests_failed + 1)
+fish --no-config "$repo_root/tests/test_backend_path.fish"
+or set -g tests_failed (math $tests_failed + 1)
+fish --no-config "$repo_root/tests/test_versions.fish"
+or set -g tests_failed (math $tests_failed + 1)
 
 if test $tests_failed -gt 0
     echo "$tests_failed test(s) failed." >&2
