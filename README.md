@@ -19,7 +19,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - **Companion-aware pulls** — `pull` discovers GGUF variants, offers the repository's MTP/draft companions, and registers them and multimodal projector files as explicit checkpoints.
 - **Parallel downloads** — `fastpull` pre-seeds the Hugging Face cache over several connections per file, roughly 4x faster than a single-connection pull.
 - **In-place model updates** — `update` upgrades downloaded models to their latest upstream revision without deleting them first, and reclaims the space the old revision used.
-- **Thorough deletion** — `delete` cancels active downloads and removes safe-to-delete cache, lock, and orphaned-file leftovers after Lemonade deletes the model, and can remove cache directories earlier deletions stranded.
+- **Thorough deletion** — `delete` cancels active downloads and removes safe-to-delete cache, lock, and orphaned-file leftovers after Lemonade deletes the model, prunes the aliases Lemonade leaves pointing at it, confirms the registry agrees the model is gone, and can remove cache directories earlier deletions stranded.
 - **Model sets** — Define named groups of models in a JSON file and load them all at once.
 
 ## Prerequisites
@@ -158,33 +158,37 @@ automatic choice.
 
 A repository usually ships MTP companions at several quants, and the one a
 variant advertises is only its recommendation. When more than one is available,
-an interactive pull offers the same menu `--repair-mtp` does, with the
-recommended companion as the default:
+an interactive pull offers the same menu `--mtp` does, with the recommended
+companion as the default:
 
 ```
 Select an MTP/draft companion:
   1) MTP/mtp-gemma-4-E2B-it-BF16.gguf
   2) MTP/mtp-gemma-4-E2B-it-Q8_0.gguf
   3) mtp-gemma-4-E2B-it.gguf
+  n) None: do not install a draft
 Draft [1]:
 ```
 
 `--yes`, `--draft PATH`, and `--no-draft` all skip the menu. A companion chosen
 by bare filename is resolved back to its repository path before registration.
 
-To add or replace an already-registered custom model's draft checkpoint, use its
-public (bare) name or its internal `user.*` name:
+To add, replace, or remove an already-registered custom model's draft
+checkpoint, use its public (bare) name or its internal `user.*` name:
 
 ```fish
 # Choose a draft interactively; Enter keeps an existing draft
-pull --repair-mtp Qwen3.8-27B-GGUF-UD-Q4_K_XL
+pull --mtp Qwen3.8-27B-GGUF-UD-Q4_K_XL
 
 # Explicit replacement, without prompting
-pull --repair-mtp gemma-4-12B-it-qat-GGUF-UD-Q4_K_XL \
+pull --mtp gemma-4-12B-it-qat-GGUF-UD-Q4_K_XL \
   --draft MTP/mtp-gemma-4-12B-it-Q4_0.gguf --yes
+
+# Drop the draft entirely and delete its weights
+pull --mtp gemma-4-12B-it-qat-GGUF-UD-Q4_K_XL --no-draft --yes
 ```
 
-The repair inspects that model's saved repository and quant, adds the matching
+`--mtp` inspects that model's saved repository and quant, adds the matching
 MTP checkpoint while preserving its recipe options, then downloads it. `--yes`
 alone refreshes an existing draft; it never chooses a replacement automatically.
 Replacing a draft unloads the model and leaves it ready to load with the new
@@ -194,6 +198,23 @@ cache files are deleted, and files still referenced by another model are kept.
 If reference checks fail, cleanup is skipped and the command reports that the
 replacement succeeded but old files may remain. Ordinary `update` runs refresh
 the selected MTP alongside the main checkpoint.
+
+Removing a draft is the same operation without a download. When a model has one
+registered, the menu grows an `n) None` entry, and `--no-draft` selects it
+without prompting:
+
+```
+Select an MTP/draft companion:
+  0) Keep and refresh org/Model:MTP/mtp-old-BF16.gguf
+  1) MTP/mtp-new-Q4_0.gguf
+  n) None: deregister and delete the current draft
+Draft [0]:
+```
+
+The model is unloaded, re-registered without its `draft` checkpoint — every
+other checkpoint, `mmproj` included, is preserved — and only then are the old
+draft's cache files deleted, under the same sharing checks a replacement uses.
+The main weights are never touched and are not re-downloaded.
 
 ### Faster pulls
 
@@ -280,8 +301,9 @@ failed or interrupted download always leaves the working model intact — and th
 registration in `user_models.json` (all checkpoints, quant, recipe options) is
 never lost the way it is when you delete a model and pull it again. `update`
 uses the enhanced `pull` path, so already-registered MTP/draft checkpoints are
-refreshed along with the main weights; use `pull --repair-mtp` once to add a
-draft that was missing from an older registration. Its prune keep-set also
+refreshed along with the main weights; use `pull --mtp` once to add a draft
+that was missing from an older registration, or `pull --mtp NAME --no-draft` to
+drop one for good. Its prune keep-set also
 includes every checkpoint reported by the model-files API.
 
 If a model is loaded when it is updated, it is unloaded first — otherwise the
@@ -293,7 +315,6 @@ running backend keeps serving the old weights — and reloaded afterwards. Pass
 | `-a`, `--all` | Update pending registry and FLM models. |
 | `-c`, `--check` | List pending updates and exit. |
 | `-f`, `--force` | Re-pull even when no update is reported, and ignore the free-space check. |
-| `--flm` | Compatibility option; FLM updates are now included by default. |
 | `-n`, `--dry-run` | Show what would be done, change nothing. |
 | `-y`, `--yes` | Do not prompt for confirmation. |
 | `-p`, `--prune` | Delete superseded weights after a successful update. |
@@ -346,11 +367,34 @@ delete user.Qwen3.8-27B-GGUF-UD-Q4_K_XL
 delete --yes user.old-model-1 user.old-model-2
 ```
 
+The registration itself always goes through `POST /api/v1/delete`, the endpoint
+behind `lemonade delete`, so Lemonade drops the model from `user_models.json`
+and from the server's own model cache exactly as its own command would — an FLM
+model is removed with `flm remove`, and a built-in stays registered with
+`downloaded: false`. Nothing is deleted from disk behind the server's back.
+
+Two things Lemonade's delete leaves behind are handled here. **Aliases** are one:
+the server never touches `aliases.json`, so an alias outlives the model it names
+and reappears the moment something else claims that name. Every alias that
+resolves to a deleted model — through a chain of aliases, if it takes one — is
+listed in the preview and removed with it, using the same endpoint as `lemonade
+alias remove`. **Stale registry state** is the other: a `success` response is not
+proof, so the registry is read back afterwards, and a model the server still
+reports as `downloaded` is called out and fails the command instead of looking
+deleted.
+
 The cleanup cancels an active download before touching its files, clears stopped
 download records, removes a repository cache and its lock directory only when no
 remaining model still holds files there, and removes unreferenced files from
 shared caches. It also runs Lemonade's legacy multi-repository orphan sweep.
-`--no-cleanup` limits the operation to Lemonade's built-in delete behavior.
+`--no-cleanup` limits the operation to Lemonade's built-in delete behavior;
+alias removal is deregistration rather than tidying, so it still runs.
+
+A model registered from a local path (`"source": "local_path"`) is refused up
+front. Lemonade resolves such a model straight to your own file and its delete
+looks for a `models--` cache directory above it, so the call fails with a 500
+and leaves the registration in place; the error says so and names the file
+rather than relaying that.
 
 A registration that is merely *known* to the server does not keep a directory
 alive; only one that actually holds files does. A built-in model stays listed
@@ -393,7 +437,7 @@ models explicitly if they should also be deleted.
 
 The model-management functions support tab completion:
 
-- `pull` + Tab — shows registered models; `--quant`, `--draft`, and `--mmproj` complete from repository inspection.
+- `pull` + Tab — shows registered models; `--quant`, `--draft`, and `--mmproj` complete from repository inspection, including `--mtp --draft` against a registered model.
 - `load` + Tab — shows all models known to the server plus set names from `model_sets.json`.
 - `unload` + Tab — shows only the currently loaded models.
 - `update` + Tab — shows downloaded models, including outdated FLM models.
@@ -523,6 +567,7 @@ These fish functions are available inside the container:
 | `install <recipe> <backend>` | Install or update a backend via the API. |
 | `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
 | `pull <model-or-repo> [options]` | Pull a registered model or interactively register a repository with its companion checkpoints. |
+| `pull --mtp <model> [--draft PATH \| --no-draft]` | Add, refresh, replace, or remove a registered custom model's MTP draft. |
 | `load <model> [model...] [options]` | Load models via the API. |
 | `load --set <name>` | Load a named model set from `model_sets.json`. |
 | `unload <model>` | Unload a model via the API. |

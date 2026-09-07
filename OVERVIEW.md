@@ -13,9 +13,9 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - Lemonade Linux browser Web UI served from the HTTP port
 - ROCm, Vulkan, and XRT/AMDXDNA backends for AMD GPUs, APUs, and NPUs
 - Fish shell with Starship prompt and enhanced `pull`/`load`/`unload`/`update`/`delete` commands with live tab completion
-- Companion-aware GGUF pulls that preserve MTP/draft and multimodal projector paths, plus repair of older registrations
+- Companion-aware GGUF pulls that preserve MTP/draft and multimodal projector paths, plus adding, replacing, or removing a registered model's MTP draft
 - In-place model updates that never delete a model before its replacement has downloaded
-- Confirmed deletion with conservative cleanup of unshared caches, plus removal of cache directories that earlier deletions stranded
+- Confirmed deletion with conservative cleanup of unshared caches, alias pruning and a registry read-back so the server agrees the model is gone, plus removal of cache directories that earlier deletions stranded
 - Docker health check against `/api/v1/health`
 
 ## Quick start
@@ -58,6 +58,7 @@ docker exec -it lemonade-stand fish
 | `install <recipe> <backend>` | Install or update a backend via the API. |
 | `install --all [--config <path>]` | Install every configured recipe marked with `"install": true`. |
 | `pull <model-or-repo> [options]` | Pull registered models or register a repository with its companion checkpoints. |
+| `pull --mtp <model> [--draft PATH \| --no-draft]` | Add, refresh, replace, or remove a registered model's MTP draft. |
 | `load <model> [model...] [options]` | Load models via the API. Tab-completes from available models. |
 | `load --set <name>` | Load a named group of models from `model_sets.json`. |
 | `unload <model>` | Unload a model. Tab-completes from loaded models. |

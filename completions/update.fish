@@ -5,7 +5,6 @@ source (builtin path dirname (status filename))/../functions/__lemonade_flm.fish
 complete -c update -s a -l all -d 'Update pending registry and FLM models'
 complete -c update -s c -l check -d 'List pending updates without changing anything'
 complete -c update -s f -l force -d 'Re-pull even when no update is reported'
-complete -c update -l flm -d 'Include FLM updates (included by default)'
 complete -c update -s n -l dry-run -d 'Show what would be done, change nothing'
 complete -c update -s y -l yes -d 'Do not prompt for confirmation'
 complete -c update -s p -l prune -d 'Delete superseded weights after updating'

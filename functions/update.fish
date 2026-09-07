@@ -12,7 +12,6 @@ function __update_usage
     echo "  -c, --check       List pending updates and exit without changing anything"
     echo "  -f, --force       Re-pull even when no update is reported, and ignore the"
     echo "                    free-space check"
-    echo "      --flm         Include FLM updates (now included by default)"
     echo "  -n, --dry-run     Show what would be done, change nothing"
     echo "  -y, --yes         Do not prompt for confirmation"
     echo "  -p, --prune       Delete superseded weights after a successful update"
@@ -425,7 +424,6 @@ function update --description 'Update downloaded Lemonade models to their latest
         a/all \
         c/check \
         f/force \
-        flm \
         n/dry-run \
         y/yes \
         p/prune \

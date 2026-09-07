@@ -168,8 +168,8 @@ function fastpull --description "Pull a model with parallel Hugging Face downloa
     end
 
     # Only registry checkpoints can be pre-seeded; plain model names and
-    # --repair-mtp are pull's business entirely.
-    if not string match -qr '^[^/]+/[^/]+' -- "$spec"; or contains -- --repair-mtp $argv; or contains -- -r $argv
+    # --mtp are pull's business entirely.
+    if not string match -qr '^[^/]+/[^/]+' -- "$spec"; or contains -- --mtp $argv; or contains -- -m $argv
         pull $argv
         return $status
     end

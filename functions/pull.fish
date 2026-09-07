@@ -7,12 +7,13 @@ function __pull_usage
     echo "  -q, --quant <variant>    Select the main GGUF variant"
     echo "  -n, --name <name>        Set the registered user.* model name"
     echo "      --draft <path>       Override the repo-relative draft/MTP GGUF"
-    echo "      --no-draft           Do not install an advertised draft GGUF"
+    echo "      --no-draft           Skip the advertised draft GGUF, or with --mtp remove"
+    echo "                           the registered one"
     echo "      --mmproj <path>      Override the repo-relative projector GGUF"
     echo "      --no-mmproj          Do not install an advertised projector"
     echo "      --source <source>    huggingface or modelscope"
     echo "      --alias <name>       Register an alias after a successful pull"
-    echo "  -r, --repair-mtp         Add, refresh, or replace an existing custom model's MTP draft"
+    echo "  -m, --mtp                Add, refresh, replace, or remove a custom model's MTP draft"
     echo "  -y, --yes                Use the recommended variant and default name"
     echo "  -h, --help               Show this help"
     echo ""
@@ -21,9 +22,10 @@ function __pull_usage
     echo "defaults to the one recommended for the selected variant; --yes takes it."
     echo "Explicit paths are relative to the model repository, for example"
     echo "MTP/mtp-model-Q4_0.gguf."
-    echo "With --repair-mtp, choose a replacement interactively or with --draft PATH."
-    echo "--yes keeps an existing draft unless --draft is specified. A replacement"
-    echo "unloads the model and deletes the old draft only after success, if unshared."
+    echo "With --mtp, choose a replacement interactively or with --draft PATH, or drop"
+    echo "the registered draft with --no-draft or the menu's None entry. --yes keeps an"
+    echo "existing draft unless --draft or --no-draft is given. Replacing or removing a"
+    echo "draft unloads the model and deletes the old draft only if it is unshared."
 end
 
 function __pull_port
@@ -220,8 +222,8 @@ function __pull_passthrough --argument-names model source alias_name
     __pull_cli_exec $args
 end
 
-function __pull_registration_payload --argument-names model_json model_name draft
-    printf '%s\n' "$model_json" | jq -c --arg model "$model_name" --arg draft "$draft" '
+function __pull_registration_payload --argument-names model_json model_name draft drop_draft
+    printf '%s\n' "$model_json" | jq -c --arg model "$model_name" --arg draft "$draft" --arg drop "$drop_draft" '
         {
             model_name: $model,
             checkpoints: ((.checkpoints // {}) + {
@@ -241,7 +243,9 @@ function __pull_registration_payload --argument-names model_json model_name draf
             auto_update: .auto_update,
             size: .size
         }
-        | if $draft != "" then .checkpoints.draft = $draft else . end
+        | if $drop == "true" then .checkpoints |= del(.draft)
+          elif $draft != "" then .checkpoints.draft = $draft
+          else . end
         | with_entries(select(.value != null))' 2>/dev/null
 end
 
@@ -289,9 +293,19 @@ function __pull_prompt_draft --argument-names existing_draft
     for index in (seq (count $candidates))
         printf '  %d) %s\n' $index $candidates[$index] >&2
     end
+    if test -n "$existing_draft"
+        echo "  n) None: deregister and delete the current draft" >&2
+    else
+        echo "  n) None: do not install a draft" >&2
+    end
     read -l -P "Draft [$default]: " answer
     or return 1
     test -n "$answer"; or set answer $default
+    # Status 2 is "no draft at all". It cannot collide with a candidate, which
+    # is always a .gguf path, and stays distinct from a cancelled selection.
+    if string match -qir '^n(one)?$' -- "$answer"
+        return 2
+    end
     if test "$answer" = 0; and test -n "$existing_draft"
         echo $existing_draft
     else if string match -qr '^[0-9]+$' -- "$answer"
@@ -319,7 +333,7 @@ function __pull_unload_model --argument-names model_name
         end
     else if test $code -eq 1
         # A model the server is not holding is already in the state a
-        # replacement needs; only a real refusal may abort the repair.
+        # replacement needs; only a real refusal may abort the change.
         if string match -qir 'model not (loaded|found)' -- (__pull_api_error "$response")
             return 0
         end
@@ -340,7 +354,7 @@ function __pull_model_files --argument-names model_name
             and (.role | type) == "string"))' 2>/dev/null
 end
 
-function __pull_cleanup_replaced_draft --argument-names model_name existing_draft old_files
+function __pull_cleanup_old_draft --argument-names model_name existing_draft old_files
     # Reuse only the exact-file cleanup primitives, never model/repo deletion or
     # global cache pruning. Refresh every reference before touching the old file.
     source (path dirname (status filename))/delete.fish
@@ -403,14 +417,80 @@ function __pull_cleanup_replaced_draft --argument-names model_name existing_draf
     return 0
 end
 
-function __pull_repair_mtp --argument-names requested_name assume_yes requested_draft
+function __pull_remove_draft --argument-names requested_name model_name model_json existing_draft assume_yes
+    if test -z "$existing_draft"
+        echo "$requested_name has no MTP draft registered; nothing to remove."
+        return 0
+    end
+
+    set -l original_registration (__pull_registration_payload "$model_json" "$model_name" '')
+    set -l stripped_registration (__pull_registration_payload "$model_json" "$model_name" '' true)
+    if test -z "$original_registration"; or test -z "$stripped_registration"
+        echo "Error: could not construct a safe registration update." >&2
+        return 1
+    end
+    if test "$original_registration" = "$stripped_registration"
+        echo "Error: the draft checkpoint could not be removed from the registration." >&2
+        return 1
+    end
+
+    # Resolve the files while the draft is still registered: once it is gone,
+    # the server no longer reports the paths that have to be cleaned up.
+    set -l old_files (__pull_model_files "$model_name")
+    if test $status -ne 0
+        echo "Error: could not inspect the existing draft files; nothing changed." >&2
+        return 1
+    end
+
+    echo ""
+    echo "Removing the MTP draft from $requested_name"
+    if test "$requested_name" != "$model_name"
+        echo "  registration: $model_name"
+    end
+    echo "  removes: $existing_draft"
+    echo "The model will be unloaded. The draft files are deleted after the registration"
+    echo "is updated, and only if no other model uses them."
+    echo "The main checkpoint is left alone and is not re-downloaded."
+
+    if test "$assume_yes" != true
+        if not isatty stdin
+            echo "Error: refusing a non-interactive draft removal without --yes." >&2
+            return 1
+        end
+        read -l -P "Remove and delete this MTP draft? [y/N] " answer
+        if not string match -qir '^y(es)?$' -- "$answer"
+            echo "Kept."
+            return 0
+        end
+    end
+
+    if not __pull_unload_model "$model_name"
+        echo "       Its registration and draft were kept." >&2
+        return 1
+    end
+
+    set -l registered (__pull_api POST /api/v1/models/register "$stripped_registration" 60)
+    if test $status -ne 0; or not printf '%s\n' "$registered" | jq -e '.status == "success"' >/dev/null 2>&1
+        echo "Error: could not update the model registration: "(__pull_api_error "$registered") >&2
+        return 1
+    end
+
+    echo "MTP draft deregistered from $model_name."
+    if not __pull_cleanup_old_draft "$model_name" "$existing_draft" "$old_files"
+        echo "Warning: the draft was deregistered, but its files could not be removed safely; they may remain." >&2
+        return 1
+    end
+    return 0
+end
+
+function __pull_mtp --argument-names requested_name assume_yes requested_draft remove_draft
     # Lemonade emits the public name of a regular registered model without the
     # internal `user.` prefix. Resolve a bare name back to its user registration;
     # never treat a built-in or extra model as a replaceable definition.
     set -l model_name $requested_name
     if not string match -q 'user.*' -- "$model_name"
         if string match -q 'builtin.*' -- "$model_name"; or string match -q 'extra.*' -- "$model_name"
-            echo "Error: --repair-mtp only modifies custom user models." >&2
+            echo "Error: --mtp only modifies custom user models." >&2
             return 1
         end
         set model_name "user.$model_name"
@@ -426,7 +506,7 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
 
     set -l recipe (printf '%s\n' "$model_json" | jq -r '.recipe // empty' 2>/dev/null)
     if test "$recipe" != llamacpp
-        echo "Error: --repair-mtp currently supports only llamacpp/GGUF models." >&2
+        echo "Error: --mtp currently supports only llamacpp/GGUF models." >&2
         return 1
     end
 
@@ -435,6 +515,11 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
     set -l draft $existing_draft
     set -l checkpoint
     set -l variant
+
+    if test "$remove_draft" = true
+        __pull_remove_draft "$requested_name" "$model_name" "$model_json" "$existing_draft" "$assume_yes"
+        return $status
+    end
 
     if test -n "$draft"; and test "$assume_yes" = true; and test -z "$requested_draft"
         echo "The model already has a draft checkpoint registered; refreshing it."
@@ -496,7 +581,13 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
             end
             if test "$assume_yes" != true; and isatty stdin; and test (count $candidates) -gt 0
                 set draft (__pull_prompt_draft "$existing_draft" $candidates)
-                or return 1
+                set -l choice $status
+                if test $choice -eq 2
+                    __pull_remove_draft "$requested_name" "$model_name" "$model_json" "$existing_draft" "$assume_yes"
+                    return $status
+                else if test $choice -ne 0
+                    return 1
+                end
             else if test -z "$draft"
                 if test (count $candidates) -eq 1
                     set draft $candidates[1]
@@ -556,7 +647,7 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
 
     if test "$assume_yes" != true
         if not isatty stdin
-            echo "Error: refusing a non-interactive repair without --yes." >&2
+            echo "Error: refusing a non-interactive draft change without --yes." >&2
             return 1
         end
         read -l -P "Apply and download this MTP draft? [y/N] " answer
@@ -584,7 +675,7 @@ function __pull_repair_mtp --argument-names requested_name assume_yes requested_
     if test $pull_status -eq 0
         echo "MTP draft installed for $model_name."
         if test "$replacing" = true
-            if not __pull_cleanup_replaced_draft "$model_name" "$existing_draft" "$old_files"
+            if not __pull_cleanup_old_draft "$model_name" "$existing_draft" "$old_files"
                 echo "Warning: replacement succeeded, but old-draft cleanup could not be completed safely; old files may remain." >&2
                 return 1
             end
@@ -613,7 +704,7 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
         no-mmproj \
         'source=' \
         'alias=' \
-        r/repair-mtp \
+        m/mtp \
         y/yes \
         h/help \
         -- $argv
@@ -630,9 +721,14 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
     end
 
     set -l model_arg $argv[1]
-    if set -q _flag_repair_mtp
-        if set -q _flag_quant; or set -q _flag_name; or set -q _flag_no_draft; or set -q _flag_mmproj; or set -q _flag_no_mmproj; or set -q _flag_source; or set -q _flag_alias
-            echo "Error: --repair-mtp accepts only --draft and --yes with an existing custom model." >&2
+    if set -q _flag_draft; and set -q _flag_no_draft
+        echo "Error: --draft and --no-draft cannot be used together." >&2
+        return 1
+    end
+
+    if set -q _flag_mtp
+        if set -q _flag_quant; or set -q _flag_name; or set -q _flag_mmproj; or set -q _flag_no_mmproj; or set -q _flag_source; or set -q _flag_alias
+            echo "Error: --mtp accepts only --draft, --no-draft, and --yes with an existing custom model." >&2
             return 1
         end
         if set -q _flag_draft; and test -z "$_flag_draft"
@@ -647,13 +743,10 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
         end
         set -l assume_yes false
         set -q _flag_yes; and set assume_yes true
-        __pull_repair_mtp "$model_arg" "$assume_yes" "$_flag_draft"
+        set -l remove_draft false
+        set -q _flag_no_draft; and set remove_draft true
+        __pull_mtp "$model_arg" "$assume_yes" "$_flag_draft" "$remove_draft"
         return $status
-    end
-
-    if set -q _flag_draft; and set -q _flag_no_draft
-        echo "Error: --draft and --no-draft cannot be used together." >&2
-        return 1
     end
     if set -q _flag_mmproj; and set -q _flag_no_mmproj
         echo "Error: --mmproj and --no-mmproj cannot be used together." >&2
@@ -776,12 +869,18 @@ function pull --description 'Pull Lemonade models with automatic MTP and compani
 
         # A variant's own draft_file is only the repository's recommendation.
         # Most MTP repositories ship companions at several quants that all pair
-        # with this variant, so offer the same menu --repair-mtp does instead of
+        # with this variant, so offer the same menu --mtp does instead of
         # silently taking the recommendation.
         set -l candidates (__pull_draft_candidates "$variants" "$draft")
         if test (count $candidates) -gt 1; and not set -q _flag_yes; and isatty stdin
             set draft (__pull_prompt_draft '' $candidates)
-            or return 1
+            set -l choice $status
+            if test $choice -eq 2
+                # The menu's None entry is --no-draft chosen after the fact.
+                set draft ''
+            else if test $choice -ne 0
+                return 1
+            end
         else if test -z "$draft"
             if test (count $candidates) -eq 1
                 set draft $candidates[1]

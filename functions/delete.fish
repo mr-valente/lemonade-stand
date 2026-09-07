@@ -17,11 +17,15 @@ function __delete_usage
     echo "      --no-cleanup   Skip the additional cache and stale-job cleanup"
     echo "  -h, --help         Show this help"
     echo ""
-    echo "The server removes each registration first. Cleanup then removes unshared"
-    echo "repository caches, stale lock directories, unreferenced shared-repo files,"
-    echo "legacy orphans, and stopped download records. Collection components"
-    echo "are retained unless they are also named explicitly. A cache directory"
-    echo "named on the command line is removed even with --no-cleanup."
+    echo "The server removes each registration first, through the same API endpoint"
+    echo "'lemonade delete' uses, so the model leaves user_models.json and the server's"
+    echo "own model cache. Aliases that pointed at a deleted model are removed with it,"
+    echo "and the registry is re-read afterwards to confirm the server agrees the model"
+    echo "is gone. Cleanup then removes unshared repository caches, stale lock"
+    echo "directories, unreferenced shared-repo files, legacy orphans, and stopped"
+    echo "download records. Collection components are retained unless they are also"
+    echo "named explicitly. A cache directory named on the command line is removed"
+    echo "even with --no-cleanup."
 end
 
 function __delete_port
@@ -79,6 +83,37 @@ end
 
 function __delete_inventory
     __delete_api GET '/api/v1/models?show_all=true' '' 120
+end
+
+function __delete_alias_targets --argument-names aliases
+    # Emit "alias<TAB>ultimate target". Lemonade lets an alias point at another
+    # alias, so follow the chain: a two-hop alias is orphaned by the delete just
+    # as surely as a direct one. The bounded walk also terminates on a cycle,
+    # which the server prunes on load but may still hold in memory.
+    printf '%s\n' "$aliases" | jq -r '
+        [.aliases[]? | select((.alias | type) == "string" and (.target | type) == "string")] as $pairs
+        | ($pairs | map({key: .alias, value: .target}) | from_entries) as $map
+        | $pairs[]
+        | [.alias, (reduce range(0; 16) as $i (.target; ($map[.] // .)))] | @tsv' 2>/dev/null
+end
+
+function __delete_remove_alias --argument-names alias
+    # The endpoint behind 'lemonade alias remove'. Deleting a model leaves its
+    # aliases in aliases.json, where they keep naming a model the server no
+    # longer has; an alias that is already gone counts as removed.
+    set -l encoded (string escape --style=url -- "$alias")
+    set -l payload (__delete_api DELETE "/internal/aliases/$encoded" '' 30)
+    set -l code $status
+    if test $code -eq 0
+        printf '%s\n' "$payload" | jq -e '.status == "deleted"' >/dev/null 2>&1
+        return $status
+    end
+    if test $code -eq 1
+        # An alias the server no longer holds is already in the wanted state.
+        string match -qir 'alias not found' -- (__delete_api_error "$payload")
+        return $status
+    end
+    return 1
 end
 
 function __delete_model_files --argument-names model_name
@@ -517,6 +552,7 @@ function delete --description 'Delete Lemonade models and clean their filesystem
     if test $status -ne 0
         set aliases '{"aliases":[]}'
     end
+    set -l alias_targets (__delete_alias_targets "$aliases")
 
     # A target that names no model is matched against the cache directory, so a
     # repository an earlier delete left behind can still be named directly. Only
@@ -642,6 +678,21 @@ function delete --description 'Delete Lemonade models and clean their filesystem
             echo "Error: '$model_name' is a cloud model; use 'lemonade cloud uninstall' instead." >&2
             return 1
         end
+        # A local_path registration resolves straight to the user's own file, so
+        # the server's delete looks for the models-- cache directory above it,
+        # never finds one, and fails with a 500 that leaves the registration in
+        # place. Say so here rather than relaying that error.
+        set -l source (printf '%s\n' "$model_json" | jq -r '.source // empty' 2>/dev/null)
+        if test "$source" = local_path
+            set -l checkpoint (printf '%s\n' "$model_json" | jq -r \
+                '.checkpoints.main // .checkpoint // empty' 2>/dev/null)
+            echo "Error: '$model_name' is registered from a local path, which Lemonade cannot delete." >&2
+            if test -n "$checkpoint"
+                echo "       The file stays yours to manage: $checkpoint" >&2
+            end
+            echo "       Remove its entry from user_models.json and restart the server to deregister it." >&2
+            return 1
+        end
 
         set -a model_names $model_name
         set -a model_records "$model_name"\t"$recipe"\t(printf '%s\n' "$model_json" | jq -r '.downloaded | tostring')
@@ -654,6 +705,17 @@ function delete --description 'Delete Lemonade models and clean their filesystem
         for record in (__delete_repo_records "$model_name" "$model_json")
             contains -- "$record" $repo_records; or set -a repo_records $record
         end
+    end
+
+    # An alias outlives the model it names: the server drops the registration
+    # but never touches aliases.json, leaving a name that still resolves for
+    # 'lemonade alias list' and reappears in /v1/models the moment something
+    # else claims the target.
+    set -l alias_records
+    for record in $alias_targets
+        set -l parts (string split \t -- "$record")
+        contains -- "$parts[2]" $model_names; or continue
+        contains -- "$record" $alias_records; or set -a alias_records $record
     end
 
     if test (count $model_records) -gt 0
@@ -693,6 +755,13 @@ function delete --description 'Delete Lemonade models and clean their filesystem
         for record in $flm_records
             set -l parts (string split \t -- "$record")
             printf '  - %s: %s (%s)\n' "$parts[1]" "$parts[3]" (__delete_human_size "$parts[4]")
+        end
+    end
+    if test (count $alias_records) -gt 0
+        echo "Aliases that will be removed with them:"
+        for record in $alias_records
+            set -l parts (string split \t -- "$record")
+            printf '  - %s -> %s\n' $parts[1] $parts[2]
         end
     end
     if not set -q _flag_no_cleanup; and test (count $repo_records) -gt 0
@@ -740,13 +809,27 @@ function delete --description 'Delete Lemonade models and clean their filesystem
         end
     end
 
+    # Deregistration, not tidying: --no-cleanup keeps files, not names that
+    # point at a model the server has already dropped.
+    set -l removed_aliases
+    for record in $alias_records
+        set -l parts (string split \t -- "$record")
+        contains -- "$parts[2]" $successful; or continue
+        if __delete_remove_alias "$parts[1]"
+            set -a removed_aliases "$parts[1]"
+        else
+            echo "  Warning: could not remove the alias '$parts[1]'." >&2
+            echo "           Run 'lemonade alias remove $parts[1]' to finish deregistering it." >&2
+        end
+    end
+
     if not set -q _flag_no_cleanup; and test (count $successful) -gt 0
         set -l remaining (__delete_inventory)
         if test $status -ne 0
             echo "Warning: could not refresh inventory; skipped direct filesystem cleanup." >&2
         else
             set -l excluded_ids $successful
-            for alias_record in (printf '%s\n' "$aliases" | jq -r '.aliases[]? | [.alias, .target] | @tsv' 2>/dev/null)
+            for alias_record in $alias_targets
                 set -l alias_parts (string split \t -- "$alias_record")
                 if contains -- $alias_parts[2] $successful
                     contains -- $alias_parts[1] $excluded_ids; or set -a excluded_ids $alias_parts[1]
@@ -865,9 +948,31 @@ function delete --description 'Delete Lemonade models and clean their filesystem
         end
     end
 
+    # The delete response only says the call succeeded. Read the registry back
+    # so a model the server still believes it holds is reported here instead of
+    # surfacing later as a model that cannot be loaded.
+    set -l still_registered
+    set -l unverified false
+    if test (count $successful) -gt 0
+        set -l final (__delete_inventory)
+        if test $status -ne 0; or not printf '%s\n' "$final" | jq -e '(.data | type) == "array"' >/dev/null 2>&1
+            set unverified true
+        else
+            for model_name in $successful
+                if printf '%s\n' "$final" | jq -e --arg model "$model_name" \
+                        'any(.data[]?; .id == $model and .downloaded == true)' >/dev/null 2>&1
+                    set -a still_registered $model_name
+                end
+            end
+        end
+    end
+
     echo ""
     if test (count $successful) -gt 0
         echo "Deleted "(count $successful)" model(s): "(string join ', ' $successful)
+    end
+    if test (count $removed_aliases) -gt 0
+        echo "Removed "(count $removed_aliases)" alias(es): "(string join ', ' $removed_aliases)
     end
     if test (count $removed_orphans) -gt 0
         echo "Removed "(count $removed_orphans)" cache directory(s): "(string join ', ' $removed_orphans)
@@ -875,8 +980,16 @@ function delete --description 'Delete Lemonade models and clean their filesystem
     if test (count $removed_flm) -gt 0
         echo "Cleaned FLM weights: "(string join ', ' $removed_flm)
     end
+    if test $unverified = true
+        echo "Warning: could not read the registry back; the deletion was not confirmed." >&2
+    end
+    if test (count $still_registered) -gt 0
+        echo "Warning: the server still reports "(string join ', ' $still_registered)" as downloaded." >&2
+        echo "         Delete again, or restart the server so it rescans the model cache." >&2
+    end
     if test (count $failed) -gt 0
         echo "Failed "(count $failed)" target(s): "(string join ', ' $failed) >&2
         return 1
     end
+    test (count $still_registered) -eq 0
 end

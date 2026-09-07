@@ -236,22 +236,22 @@ function __pull_refresh_registered
     end
     return 0
 end
-pull --yes --repair-mtp Legacy-Q4 >/dev/null
+pull --yes --mtp Legacy-Q4 >/dev/null
 set -l repaired_draft (printf '%s\n' "$repaired_registration" | jq -r '.checkpoints.draft')
 assert_equal 'legacy/Legacy-GGUF:MTP/mtp-Legacy-Q4_0.gguf' $repaired_draft \
-    'repair-mtp adds the discovered draft to the existing registration'
+    '--mtp adds the discovered draft to the existing registration'
 set -l repaired_ctx (printf '%s\n' "$repaired_registration" | jq -r '.recipe_options.ctx_size')
 assert_equal 8192 $repaired_ctx \
-    'repair-mtp preserves existing recipe options while adding the draft'
+    '--mtp preserves existing recipe options while adding the draft'
 
 set -g repair_pull_fails true
-pull --yes --repair-mtp Legacy-Q4 >/dev/null 2>/dev/null
+pull --yes --mtp Legacy-Q4 >/dev/null 2>/dev/null
 set -l repair_failure_status $status
 assert_equal 1 $repair_failure_status \
-    'repair-mtp reports a failed companion download'
+    '--mtp reports a failed companion download'
 set -l restored_draft (printf '%s\n' "$repaired_registration" | jq -r '.checkpoints.draft // empty')
 assert_equal '' "$restored_draft" \
-    'repair-mtp restores the original registration after a failed pull'
+    '--mtp restores the original registration after a failed pull'
 set -e repair_pull_fails
 
 source "$repo_root/completions/pull.fish"
@@ -502,7 +502,114 @@ assert_not_contains datasets--foo--bar 'completion ignores non-model cache direc
 
 rm -rf -- "$cache_sandbox"
 
-fish --no-config "$repo_root/tests/test_repair_mtp.fish"
+# --- registry consistency --------------------------------------------------
+
+set -l registry_sandbox (mktemp -d)
+set -g registry_storage "$registry_sandbox/hub"
+set -g aliased_dir "$registry_storage/models--unsloth--Aliased"
+mkdir -p "$aliased_dir/snapshots/rev"
+printf weights >"$aliased_dir/snapshots/rev/Aliased-Q4.gguf"
+
+# user.Imported carries a local_path source: the server resolves it straight to
+# the user's own file, so its own delete cannot find a models-- directory.
+set -g registry_models '[
+  {"id":"user.Aliased","source":"huggingface","registry_source":"huggingface","checkpoints":{"main":"unsloth/Aliased:Aliased-Q4.gguf"},"recipe":"llamacpp","downloaded":true,"components":[]},
+  {"id":"user.Kept","source":"huggingface","registry_source":"huggingface","checkpoints":{"main":"unsloth/Kept:Kept-Q4.gguf"},"recipe":"llamacpp","downloaded":true,"components":[]},
+  {"id":"user.Imported","source":"local_path","checkpoints":{"main":"/srv/models/imported.gguf"},"recipe":"llamacpp","downloaded":true,"components":[]}
+]'
+# `shorter` reaches user.Aliased only through `short`; `other` names a model
+# that is not being deleted.
+set -g registry_aliases '{"aliases":[{"alias":"short","target":"user.Aliased"},{"alias":"shorter","target":"short"},{"alias":"other","target":"user.Kept"}]}'
+set -g registry_deleted ''
+set -g registry_stale false
+set -g alias_missing false
+set -g alias_deletes
+set -g registry_reads 0
+
+function __delete_inventory
+    set -g registry_reads (math $registry_reads + 1)
+    if test $registry_reads -eq 1; or test "$registry_stale" = true
+        printf '{"data":%s}\n' $registry_models
+    else
+        printf '{"data":%s}\n' (printf '%s' $registry_models | jq -c \
+            --arg deleted "$registry_deleted" 'map(select(.id != $deleted))')
+    end
+end
+
+function __delete_api --argument-names method path body timeout
+    switch "$method $path"
+        case 'GET /api/v1/health'
+            echo '{"status":"ok"}'
+        case 'GET /internal/aliases'
+            echo $registry_aliases
+        case 'GET /api/v1/models/user.Aliased/files?include_paths=true'
+            printf '{"files":[{"name":"Aliased-Q4.gguf","role":"main","path":"%s/snapshots/rev/Aliased-Q4.gguf","size_bytes":7}]}\n' $aliased_dir
+        case 'GET /api/v1/system-info'
+            printf '{"model_storage":{"path":"%s"}}\n' $registry_storage
+        case 'GET /api/v1/downloads'
+            echo '[]'
+        case 'POST /api/v1/delete'
+            echo '{"status":"success"}'
+        case 'DELETE /internal/aliases/*'
+            set -ga alias_deletes (string replace 'DELETE /internal/aliases/' '' -- "$method $path")
+            if test "$alias_missing" = true
+                echo '{"error":{"message":"Alias not found: short"}}'
+                return 1
+            end
+            echo '{"status":"deleted"}'
+        case 'POST /internal/cleanup-cache'
+            echo '{"total_bytes":0,"orphaned_files":[]}'
+        case '*'
+            echo '{}'
+    end
+end
+
+set registry_deleted user.Aliased
+delete --yes user.Aliased >/dev/null 2>"$registry_sandbox/error"
+set -l aliased_status $status
+assert_equal 0 $aliased_status 'a confirmed delete succeeds'
+set -l removed_alias_names (string join ' ' $alias_deletes)
+assert_equal 'short shorter' "$removed_alias_names" \
+    'deleting a model removes every alias that resolves to it, chained ones included'
+assert_not_contains other 'an alias for a model that stays is left alone' $alias_deletes
+assert_path_missing "$aliased_dir" 'the deleted model still loses its repository cache'
+
+# A 404 from the alias endpoint means the name is already gone, not a failure.
+set alias_missing true
+set alias_deletes
+set registry_reads 0
+delete --yes user.Aliased >/dev/null 2>"$registry_sandbox/error"
+set -l missing_status $status
+assert_equal 0 $missing_status 'an alias the server no longer holds does not fail the delete'
+set alias_missing false
+
+set alias_deletes
+set registry_reads 0
+delete --yes user.Imported >/dev/null 2>"$registry_sandbox/error"
+set -l imported_status $status
+assert_equal 1 $imported_status 'a local_path model is refused before the server can fail on it'
+set -l imported_error (string join ' ' (cat "$registry_sandbox/error"))
+set -l names_file no
+string match -q '*/srv/models/imported.gguf*' -- "$imported_error"; and set names_file yes
+assert_equal yes $names_file 'refusing a local_path model names the file it leaves alone'
+assert_equal 0 (count $alias_deletes) 'a refused local_path delete touches no aliases'
+
+# The server answering "success" is not proof: the registry is read back.
+set registry_stale true
+set alias_deletes
+set registry_reads 0
+delete --yes user.Kept >/dev/null 2>"$registry_sandbox/error"
+set -l stale_status $status
+assert_equal 1 $stale_status 'a model the server still reports as downloaded fails the delete'
+set -l stale_error (string join ' ' (cat "$registry_sandbox/error"))
+set -l warned no
+string match -q '*still reports*' -- "$stale_error"; and set warned yes
+assert_equal yes $warned 'an unconfirmed deletion is reported rather than passing silently'
+set registry_stale false
+
+rm -rf -- "$registry_sandbox"
+
+fish --no-config "$repo_root/tests/test_mtp.fish"
 or set -g tests_failed (math $tests_failed + 1)
 fish --no-config "$repo_root/tests/test_flm_functions.fish"
 or set -g tests_failed (math $tests_failed + 1)
