@@ -18,5 +18,13 @@ complete -c load -l height -r -f -d 'Image height'
 complete -c load -l save_options -r -f -a 'true false' -d 'Save per-model recipe options'
 complete -c load -l merge_args -r -f -a 'true false' -d 'Merge global and per-model args'
 
+function __load_completion_port
+    if set -q LEMONADE_PORT; and test -n "$LEMONADE_PORT"
+        echo $LEMONADE_PORT
+    else
+        echo 13305
+    end
+end
+
 # Complete model names from the API
-complete -c load -f -a '(curl -s http://localhost:$LEMONADE_PORT/api/v1/models | jq -r ".data[].id")'
+complete -c load -f -a '(curl -s http://localhost:(__load_completion_port)/api/v1/models | jq -r ".data[].id")'

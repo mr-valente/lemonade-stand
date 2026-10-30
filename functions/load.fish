@@ -60,7 +60,7 @@ function __load_model --argument-names model_name
     set -l port $LEMONADE_PORT
 
     if test -z "$port"
-        set port 8000
+        set port 13305
     end
 
     set -l body (__load_body "$model_name" $option_args)

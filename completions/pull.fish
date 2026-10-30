@@ -2,7 +2,7 @@ function __pull_completion_port
     if set -q LEMONADE_PORT; and test -n "$LEMONADE_PORT"
         echo $LEMONADE_PORT
     else
-        echo 8000
+        echo 13305
     end
 end
 

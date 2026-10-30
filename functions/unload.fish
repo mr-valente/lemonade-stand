@@ -2,8 +2,13 @@ function unload
     argparse 'a/all' -- $argv
     or return
 
+    set -l port $LEMONADE_PORT
+    if test -z "$port"
+        set port 13305
+    end
+
     if set -q _flag_all
-        set -l health_response (curl -s "http://localhost:$LEMONADE_PORT/api/v1/health")
+        set -l health_response (curl -s "http://localhost:$port/api/v1/health")
         set -l models (echo $health_response | jq -r '.all_models_loaded[]?.model_name')
 
         if test -z "$models"
@@ -13,7 +18,7 @@ function unload
 
         for model in $models
             echo "Unloading $model..."
-            curl -s -X POST "http://localhost:$LEMONADE_PORT/api/v1/unload" \
+            curl -s -X POST "http://localhost:$port/api/v1/unload" \
                 -H "Content-Type: application/json" \
                 -d "{ \"model_name\": \"$model\" }"
             echo ""
@@ -24,7 +29,7 @@ function unload
             return 1
         end
         set -l model_name $argv[1]
-        curl -X POST "http://localhost:$LEMONADE_PORT/api/v1/unload" \
+        curl -X POST "http://localhost:$port/api/v1/unload" \
             -H "Content-Type: application/json" \
             -d "{ \"model_name\": \"$model_name\" }"
     end

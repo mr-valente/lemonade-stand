@@ -38,7 +38,7 @@ services:
     image: valentemath/lemonade-stand:latest
     container_name: lemonade-stand
     ports:
-      - "8000:8000"
+      - "13305:13305"
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
@@ -66,7 +66,7 @@ docker compose up -d
 Open the Web UI:
 
 ```text
-http://localhost:8000
+http://localhost:13305
 ```
 
 Connect to the shell
@@ -502,7 +502,7 @@ The server is configured entirely through environment variables. Set them in you
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `LEMONADE_HOST` | `localhost` | Address to listen on. Set to `0.0.0.0` to accept external connections. |
-| `LEMONADE_PORT` | `8000` | Port the server listens on. The compose `ports` mapping must match. |
+| `LEMONADE_PORT` | `13305` | Port the server listens on. The compose `ports` mapping must match. |
 | `LEMONADE_LOG_LEVEL` | `info` | Logging verbosity (`debug`, `info`, `warning`, `error`). |
 | `LEMONADE_API_KEY` | *(none)* | If set, requires Bearer authentication on all requests. |
 

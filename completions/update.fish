@@ -13,7 +13,7 @@ complete -c update -s h -l help -d 'Show usage'
 
 function __update_completion_models
     set -l port $LEMONADE_PORT
-    test -n "$port"; or set port 8000
+    test -n "$port"; or set port 13305
 
     set -l headers
     if set -q LEMONADE_ADMIN_API_KEY; and test -n "$LEMONADE_ADMIN_API_KEY"

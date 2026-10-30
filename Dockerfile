@@ -1,12 +1,14 @@
-FROM archlinux:latest
-
-# Enable extra-testing repo for XRT packages
-RUN printf '\n[extra-testing]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf
+# Runtime system. The build stage starts from this too, so Lemonade is compiled
+# against exactly the libraries it runs with.
+FROM archlinux:latest AS base
 
 # Install base packages, XRT, and NPU plugin
 # NOTE: The host must have amdxdna loaded for NPU access at runtime.
+# `pacman -Scc --noconfirm` takes the prompt's default answer (keep the cache),
+# so the confirmation is piped in instead.
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm --needed \
+        # Kept at runtime: vLLM/Triton JIT-compile native modules
         base-devel \
         ca-certificates \
         curl \
@@ -14,17 +16,11 @@ RUN pacman -Syu --noconfirm && \
         wget \
         pciutils \
         fish \
+        starship \
         jq \
         vim \
         git \
-        cmake \
-        ninja \
-        rust \
-        nodejs-lts-iron \
-        npm \
-        boost \
         ffmpeg \
-        pkgconf \
         openssl \
         zlib \
         systemd \
@@ -39,22 +35,35 @@ RUN pacman -Syu --noconfirm && \
         # For the nputop utility
         python-textual \
         python-rich \
-    && pacman -Scc --noconfirm
+    && yes | pacman -Scc
 
-# Clone and build lemonade from source
+FROM base AS build
+
+# Build-only toolchain; none of it reaches the final image.
+RUN pacman -S --noconfirm --needed \
+        cmake \
+        ninja \
+        nodejs \
+        npm \
+        pkgconf \
+        python
+
+# Clone and build lemonade from source, staging the install under /staging.
+# Lemonade installs to /opt and symlinks into /usr; both honour DESTDIR.
 ARG LEMONADE_VERSION
-RUN git clone https://github.com/lemonade-sdk/lemonade.git /opt/lemonade && \
-    cd /opt/lemonade && \
-    if [ -n "$LEMONADE_VERSION" ]; then git checkout "v${LEMONADE_VERSION}"; fi && \
+RUN git clone --depth 1 ${LEMONADE_VERSION:+--branch "v${LEMONADE_VERSION}"} \
+        https://github.com/lemonade-sdk/lemonade.git /src/lemonade && \
+    cd /src/lemonade && \
     cmake --preset default -DBUILD_WEB_APP=ON && \
     cmake --build --preset default && \
-    cmake --build --preset default --target web-app && \
-    cmake --install build && \
-    rm -rf /opt/lemonade
+    DESTDIR=/staging cmake --install build
+
+FROM base
+
+COPY --from=build /staging/ /
 
 # Configure fish and starship
-RUN curl -sS https://starship.rs/install.sh | sh -s -- -y && \
-    mkdir -p ~/.config/fish && \
+RUN mkdir -p ~/.config/fish && \
     starship preset pure-preset -o ~/.config/starship.toml && \
     echo "starship init fish | source" >> ~/.config/fish/config.fish && \
     echo "function fish_greeting" >> ~/.config/fish/config.fish && \
@@ -85,12 +94,13 @@ ENV HF_HOME=/huggingface \
     HF_HUB_CACHE=/huggingface/hub \
     XDG_RUNTIME_DIR=/run/lemonade
 
-RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}" 
+RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
 
 # Queries the health endpoint and checks for "status": "ok"
+# 13305 is Lemonade's default port when LEMONADE_PORT is unset.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD curl -f -s http://localhost:${LEMONADE_PORT}/api/v1/health | jq -e '.status == "ok"' > /dev/null || exit 1
+  CMD curl -f -s http://localhost:${LEMONADE_PORT:-13305}/api/v1/health | jq -e '.status == "ok"' > /dev/null || exit 1
 
 # Start the server.
 ENTRYPOINT ["/opt/bin/lemonade-entrypoint"]
- CMD ["/opt/bin/lemond", "/root/.cache/lemonade"]
+CMD ["/opt/bin/lemond", "/root/.cache/lemonade"]

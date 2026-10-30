@@ -26,7 +26,7 @@ services:
     image: valentemath/lemonade-stand:latest
     container_name: lemonade-stand
     ports:
-      - "8000:8000"
+      - "13305:13305"
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri

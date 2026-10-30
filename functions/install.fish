@@ -23,7 +23,7 @@ function __install_backend --argument-names recipe backend stream force
     set -l port $LEMONADE_PORT
 
     if test -z "$port"
-        set port 8000
+        set port 13305
     end
 
     set -l body (jq -nc \
