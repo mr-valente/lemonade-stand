@@ -11,7 +11,7 @@ function versions --description 'Inventory Lemonade backend packages and ROCm ru
     source (builtin path dirname (status filename))/backend-path.fish
     backend-path
     set -l root (__lemonade_backend_root)
-    set -l families llamacpp llamacpp-hrx whispercpp sd-cpp flm kokoro vllm ryzenai-llm onnxruntime moonshine openmoss acestep thenoise thinksound trellis ds4 therock therock-wheels
+    set -l families llamacpp llamacpp-hrx whispercpp sd-cpp flm kokoro vllm ryzenai-llm onnxruntime moonshine openmoss acestep thenoise thinksound trellis ds4 gufo halogen rocmfpx therock therock-wheels
     set -l catalogs /opt/share/lemonade-server/resources/backend_versions.json /usr/local/share/lemonade-server/resources/backend_versions.json /usr/share/lemonade-server/resources/backend_versions.json
     if set -q LEMONADE_BACKEND_VERSIONS_FILE
         set catalogs "$LEMONADE_BACKEND_VERSIONS_FILE"
@@ -48,6 +48,26 @@ function versions --description 'Inventory Lemonade backend packages and ROCm ru
                 while read -l line
                     test -n "$line"; and printf '    %s\n' "$line"
                 end <"$marker"
+                # A container backend's marker is its image pin; the image
+                # itself lives on the Docker host and can be pruned there.
+                set -l digest (string match -r 'sha256:[0-9a-f]{64}' <"$marker")[1]
+                if test -n "$digest"
+                    if not set -q images
+                        # Images pulled by digest carry no tag, so Docker
+                        # hides them unless asked for all images.
+                        set -f images (command docker image ls -a -q 2>/dev/null | sort -u \
+                            | xargs -r docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' 2>/dev/null \
+                            | string replace -r '.*@' '')
+                        command docker info >/dev/null 2>&1; or set -f images unreachable
+                    end
+                    if test "$images" = unreachable
+                        echo '    image: Docker is not reachable, so its presence is unknown'
+                    else if contains -- $digest $images
+                        echo '    image: present on the Docker host'
+                    else
+                        printf '    image: missing from the Docker host; run: install %s %s\n' "$family" (builtin path basename "$directory")
+                    end
+                end
                 set found true
             end
             if test "$found" = false

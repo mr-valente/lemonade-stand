@@ -7,7 +7,7 @@ complete -c load -s h -l help -d 'Show usage'
 complete -c load -l set -r -f -a '(jq -r "keys[]" /root/.cache/lemonade/model_sets.json 2>/dev/null)' -d 'Load a model set'
 
 complete -c load -l ctx_size -r -f -d 'Context window size'
-complete -c load -l llamacpp_backend -r -f -a 'vulkan rocm metal cpu' -d 'llama.cpp backend'
+complete -c load -l llamacpp_backend -r -f -a 'rocm vulkan nathanw halobox cpu' -d 'llama.cpp backend'
 complete -c load -l llamacpp_args -r -d 'Extra llama-server arguments'
 complete -c load -l whispercpp_backend -r -f -a 'cpu vulkan npu' -d 'Whisper backend'
 complete -c load -l whispercpp_args -r -d 'Extra whisper-server arguments'

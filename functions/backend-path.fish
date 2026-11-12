@@ -61,6 +61,8 @@ function backend-path --description 'Refresh PATH for installed Lemonade backend
     set -g __lemonade_added_paths
     for directory in $directories
         test -d "$directory"; or continue
+        # A container backend leaves only its image pin here, nothing to run.
+        string match -q '*@sha256:*' -- (cat "$directory/version.txt" 2>/dev/null); and continue
         contains -- "$directory" $original $__lemonade_added_paths; and continue
         set -ga __lemonade_added_paths "$directory"
     end

@@ -58,9 +58,15 @@ RUN git clone --depth 1 ${LEMONADE_VERSION:+--branch "v${LEMONADE_VERSION}"} \
     cmake --build --preset default && \
     DESTDIR=/staging cmake --install build
 
+# The Docker client only. Lemonade runs its container backends on the host's
+# daemon through a mounted socket; the image carries no engine of its own.
+# Podman must stay out of this image: Lemonade prefers it whenever it is on PATH.
+FROM docker:29-cli AS docker-cli
+
 FROM base
 
 COPY --from=build /staging/ /
+COPY --from=docker-cli /usr/local/bin/docker /opt/docker/bin/docker
 
 # Configure fish and starship
 RUN mkdir -p ~/.config/fish && \
@@ -80,21 +86,28 @@ COPY completions/ /root/.config/fish/completions/
 # Discover backend and ROCm tools when Fish starts and after backend installs.
 COPY conf.d/ /root/.config/fish/conf.d/
 
-# Copy startup wrapper and nputop.py, then make them executable
+# Copy the startup wrapper and utilities, then make them executable.
+# `docker` resolves to the wrapper, which forwards LEMONADE_CONTAINER_ENV.
 COPY entrypoint.sh /opt/bin/lemonade-entrypoint
 COPY utils/nputop.py /opt/nputop.py
-RUN chmod +x /opt/bin/lemonade-entrypoint /opt/nputop.py && \
+COPY utils/docker-wrapper.sh /usr/local/bin/docker
+COPY utils/preflight.sh /usr/local/bin/preflight
+RUN chmod +x /opt/bin/lemonade-entrypoint /opt/nputop.py \
+        /usr/local/bin/docker /usr/local/bin/preflight && \
     ln -s /opt/nputop.py /usr/local/bin/nputop
 
 # Update PCI IDs
 RUN update-pciids
 
-# Create HuggingFace cache directories
+# Model storage. The hub cache is $HF_HOME/hub, so overriding HF_HOME alone
+# moves it; container backends need it at the same path as on the host.
 ENV HF_HOME=/huggingface \
-    HF_HUB_CACHE=/huggingface/hub \
     XDG_RUNTIME_DIR=/run/lemonade
 
-RUN mkdir -p "${HF_HOME}" "${HF_HUB_CACHE}"
+RUN mkdir -p "${HF_HOME}/hub"
+
+# Variables forwarded from this container to container backends, when set.
+ENV LEMONADE_CONTAINER_ENV="GPU_MAX_HW_QUEUES"
 
 # Queries the health endpoint and checks for "status": "ok"
 # 13305 is Lemonade's default port when LEMONADE_PORT is unset.

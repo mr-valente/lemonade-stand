@@ -235,8 +235,6 @@ function __pull_registration_payload --argument-names model_json model_name draf
             registry_source: (.registry_source // .source),
             recipe_options: (.recipe_options // {}),
             components: (.components // []),
-            image_defaults: .image_defaults,
-            audio_defaults: .audio_defaults,
             routing: .routing,
             system_prompt: .system_prompt,
             version: .version,

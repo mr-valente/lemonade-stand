@@ -55,6 +55,13 @@ if contains -- "$LEMONADE_BACKEND_DIR/flm/npu" $PATH
     echo 'FAIL: uninstalled backends must leave PATH on refresh.' >&2
     set failures (math $failures + 1)
 end
+mkdir -p "$LEMONADE_BACKEND_DIR/llamacpp/nathanw"
+printf 'vulkan-radv-performance@sha256:%064d\n' 0 >"$LEMONADE_BACKEND_DIR/llamacpp/nathanw/version.txt"
+backend-path
+if contains -- "$LEMONADE_BACKEND_DIR/llamacpp/nathanw" $PATH
+    echo 'FAIL: a container backend holds only an image pin and must stay off PATH.' >&2
+    set failures (math $failures + 1)
+end
 source "$repo/functions/rocm-info.fish"
 printf '7.14.0\n' >"$LEMONADE_BACKEND_DIR/therock-wheels/gfx1151-7.14.0/version.txt"
 rocm-info >"$sandbox/rocm-output" 2>"$sandbox/error"
