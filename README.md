@@ -16,7 +16,7 @@ Lemonade ships with a desktop GUI, but this image is for users who prefer to run
 - **AMD hardware acceleration** — ROCm and Vulkan for discrete/integrated GPUs, and XRT + AMDXDNA for NPU inference.
 - **Container backends** — Lemonade's Strix Halo engines (Gufo, Halogen, ROCm FPX, DwarfStar4 and two llama.cpp forks) run on the host's Docker daemon, with a `preflight` check, GPU group alignment, and cleanup built in.
 - **Fish shell + Starship prompt** — A polished terminal environment for interactive model management.
-- **Enhanced model management** — `pull`, `fastpull`, `load`, `unload`, `update`, and `delete` add safer workflows and live tab completion around Lemonade's API and CLI. See [Managing models](docs/models.md).
+- **Enhanced model management** — `list`, `pull`, `fastpull`, `load`, `unload`, `update`, and `delete` add safer workflows and live tab completion around Lemonade's API and CLI. See [Managing models](docs/models.md).
 - **Declarative backends** — Mark backends in `config.json` and `install --all` brings them up to date after every image upgrade.
 
 ## Prerequisites
@@ -112,6 +112,7 @@ These commands are available in the container's Fish shell:
 | Command | Description |
 | :--- | :--- |
 | `lm [args...]` | Alias for `lemonade`. Use `lm list`, `lm backends`, `lm config`, etc. |
+| `list [pattern...]` | Downloaded models, one row each, with their aliases, type, context, and size. |
 | `preflight` | Check that container backends can run: Docker socket, network, model paths, GPU group. |
 | `install <recipe> [backend]` | Install or update a backend. Without a backend, the recipe's default. |
 | `install --all` | Install every backend marked with `"install"` in `config.json`. |

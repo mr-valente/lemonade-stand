@@ -4,6 +4,52 @@ The model commands wrap Lemonade's API and CLI with safer workflows and live tab
 completion. Run them in the container's Fish shell: `docker exec -it lemonade-stand fish`.
 
 
+## Listing
+
+`lemonade list --downloaded` prints an aliased model once under its own name and
+again under each alias, so aliases look like extra models. `list` shows each
+downloaded model once, with the aliases that point at it:
+
+```
+❯ list
+  MODEL                               ALIAS       TYPE      RECIPE      CONTEXT      SIZE
+  ───────────────────────────────────────────────────────────────────────────────────────
+  chandra-ocr-2-clerk                 satsuma     chat      llamacpp        24K    9.7 GB
+  d3-ultra-FLM                        citron      classify  flm               —   28.0 GB
+  DeepSeek-OCR-2-GGUF-BF16                        chat      llamacpp         8K    6.3 GB
+  embeddinggemma-300m-GGUF-BF16       kumquat     embed     llamacpp         2K    584 MB
+● Qwen3.8-27B-Gufo                    lemon       chat      gufo           128K   18.4 GB
+  ...
+  ───────────────────────────────────────────────────────────────────────────────────────
+  22 models · 13 aliases · ● 1 loaded · 251.7 GB
+```
+
+- **●** marks a loaded model.
+- **TYPE** comes from the model's labels: `chat`, `embed`, `rerank`, `stt`,
+  `tts`, `image`, `upscale` or `classify`.
+- **CONTEXT** is the `ctx_size` a loaded model runs with. For a model that is
+  not loaded, it is the configured `ctx_size`, or else the largest context the
+  model supports.
+- **SIZE** is the model's size as Lemonade reports it. The total counts files
+  that two models share only once, such as the weights a model shares with its
+  MTP variant.
+
+An alias whose model is not downloaded is listed under the table. In a narrow
+terminal, `list` drops CONTEXT, then TYPE, then RECIPE, then shortens names from
+the middle so the quant suffix stays visible. Piped output keeps every column
+and has no color; `NO_COLOR` turns color off in a terminal.
+
+A pattern shows the models whose name or an alias contains it, ignoring case.
+With a `*`, the whole name must match. Several patterns combine:
+
+```fish
+list gemma            # every Gemma model
+list 'qwen*' lemon    # names starting with qwen, plus the model behind lemon
+```
+
+`list` only reads what is on this server. To browse models available to
+download, use `lemonade list`.
+
 ## Pulling
 
 For a registered Lemonade model, `pull` delegates directly to the Lemonade CLI:
@@ -321,6 +367,7 @@ models explicitly if they should also be deleted.
 
 The model-management functions support tab completion:
 
+- `list` + Tab — shows downloaded models, and aliases with the model each names.
 - `pull` + Tab — shows registered models; `--quant`, `--draft`, and `--mmproj` complete from repository inspection, including `--mtp --draft` against a registered model.
 - `load` + Tab — shows all models known to the server plus set names from `model_sets.json`.
 - `unload` + Tab — shows only the currently loaded models.

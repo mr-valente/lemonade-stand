@@ -617,6 +617,8 @@ fish --no-config "$repo_root/tests/test_backend_path.fish"
 or set -g tests_failed (math $tests_failed + 1)
 fish --no-config "$repo_root/tests/test_versions.fish"
 or set -g tests_failed (math $tests_failed + 1)
+fish --no-config "$repo_root/tests/test_list.fish"
+or set -g tests_failed (math $tests_failed + 1)
 
 if test $tests_failed -gt 0
     echo "$tests_failed test(s) failed." >&2

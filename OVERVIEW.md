@@ -58,6 +58,7 @@ docker exec -it lemonade-stand fish
 | Command | Description |
 | :--- | :--- |
 | `lm [args...]` | Alias for `lemonade`. |
+| `list [pattern...]` | Downloaded models, one row each, with the aliases that point at them. |
 | `preflight` | Check that container backends can run. |
 | `install <recipe> [backend]` | Install or update a backend; Tab completes both from the server. |
 | `install --all` | Install every backend marked with `"install"` in `config.json`. |
