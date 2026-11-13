@@ -81,27 +81,29 @@ load user.Qwen3.8-27B-GGUF-UD-Q4_K_XL      # load the registered model
 unload user.Qwen3.8-27B-GGUF-UD-Q4_K_XL    # free the model
 ```
 
-## Container backends
+## Language model backends
 
-Lemonade can run a model's engine from a container image instead of a downloaded
-binary. All six are built for Strix Halo (`gfx1151`) and install like any other
-backend, for example `install rocmfpx`.
+Every backend that runs language models on a Strix Halo under Linux, with a
+verdict from measurements on a 128 GB machine. Those marked *container* need the
+[container backend](docs/container-backends.md) setup from the quick start.
 
 | Backend | What it is | Runs | Verdict |
 | :--- | :--- | :--- | :--- |
-| `gufo:rocm` | Open-source engine with kernels written per model for Strix Halo | A few top models, from ordinary GGUFs: Qwen3.8-27B, Qwen3.8-Flash-Next, DeepSeek-V4-Flash | **Run it.** Fastest on every measure for the models it covers |
-| `rocmfpx:rocm` | llama.cpp fork with ROCmFP4/6/8 weight formats and MTP drafting | Its own ROCmFP4 builds: Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B | **Run it** for those models; faster and lighter than stock llama.cpp |
-| `llamacpp:nathanw` | llama.cpp fork tuned for Strix Halo's Vulkan driver | Any GGUF | Situational: quickest llama.cpp on long prompts, slowest at generating |
-| `llamacpp:halobox` | Community llama.cpp fork on a custom ROCm runtime | Any GGUF | Skip: no gain over the built-in ROCm backend |
-| `halogen:rocm` | Free, proprietary agent engine with per-model kernels and a 262K context | Qwen3.8-Flash-Next in its own 119 GB format | For the flagship model, when it can have the whole machine |
-| `ds4:rocm` | DwarfStar4, a DeepSeek V4 engine that streams weights from SSD | DeepSeek-V4/V4.1-Flash and GLM-5.3-Flash, 93 to 366 GB | Only for those models, including ones larger than memory |
+| `llamacpp:rocm` | llama.cpp on ROCm | Any GGUF | **The default.** Give models an MTP draft: it about doubled generation speed |
+| `llamacpp:vulkan` | llama.cpp on Vulkan | Any GGUF | Matches ROCm at generating; the fallback |
+| `gufo:rocm` *container* | Engine with kernels written per model | Qwen3.8-27B, Qwen3.8-Flash-Next, DeepSeek-V4-Flash, from ordinary GGUFs | **Run it.** Fastest for the 27B and DeepSeek models it covers |
+| `halogen:rocm` *container* | Free, proprietary agent engine with per-model kernels | Qwen3.8-Flash-Next in its own 119 GB format | **Run it** for that model: 64 tokens/s, and a 25K prompt read in 12 s. Holds about 90 GiB |
+| `rocmfpx:rocm` *container* | llama.cpp fork with ROCmFP4/6/8 weight formats | Its own builds of Qwen3.8-27B, Qwen3.6-35B-A3B, Gemma-4-26B-A4B | Worth having for those builds; faster and lighter than stock |
+| `llamacpp:nathanw` *container* | llama.cpp fork tuned for the Vulkan driver | Any GGUF | Situational: quickest llama.cpp on long prompts, slower at generating |
+| `llamacpp:halobox` *container* | Community llama.cpp fork on a custom ROCm | Any GGUF | Skip: no gain over built-in ROCm |
+| `ds4:rocm` *container* | DwarfStar4, a DeepSeek V4 engine that can stream weights from SSD | DeepSeek-V4/V4.1-Flash, GLM-5.3-Flash | Only for models Gufo lacks; Gufo ran the shared one 75% faster |
+| `llamacpp-hrx:hrx` | AMD's experimental HRX backend for llama.cpp | 28 catalog GGUFs, chat only | Not yet: equals ROCm without a draft, and has no MTP support in this release |
+| `flm:npu` | FastFlowLM on the NPU | Its own NPU model builds | For small models off the GPU: a 2B ran at 25 tokens/s, a 27B at 2 with an 8K context |
+| `vllm:rocm` | vLLM with ROCm PyTorch | FP16 safetensors | Only for many simultaneous requests: half of llama.cpp's speed for one, 6x its throughput for 32 |
 
-Measured on a 128 GB Strix Halo with Qwen3.8-27B at Q4: Gufo generated 30.8
-tokens/s and read a 25K-token prompt at 559 tokens/s, ROCm FPX 28.0 and 351,
-and the built-in ROCm backend 23.8 and 325. Halogen and DwarfStar4 are untested
-here.
-
-Full guide, requirements and troubleshooting: [Container backends](docs/container-backends.md).
+`ryzenai-llm` requires Windows, and the `cuda` and `metal` llama.cpp backends
+need other hardware. Numbers, method and caveats:
+[Choosing a language model backend](docs/backends.md#choosing-a-language-model-backend).
 
 ## Shell tools
 

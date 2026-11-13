@@ -57,45 +57,8 @@ host's containers. Lemonade's rootless path needs Podman on the host and a
 All but Halogen are packaged as images by Donato Capitella
 ([kyuz0](https://hub.docker.com/u/kyuz0)).
 
-### Which to run
-
-- **Gufo, for the models it covers.** It was the fastest backend on every
-  measure below, and it runs the same GGUF weights the built-in backends use.
-- **ROCm FPX, for its catalog models.** Faster generation than stock llama.cpp
-  in less memory, and it covers models Gufo does not.
-- **`llamacpp:rocm`, the built-in backend, for everything else.** Neither
-  drop-in llama.cpp fork beat it at generating text.
-- **`llamacpp:nathanw` when prompts are long and answers short**, on a GGUF no
-  dedicated engine supports. It read long prompts fastest of the llama.cpp
-  builds but generated slowest, and takes about a second longer to produce a
-  first token after each load.
-- **`llamacpp:halobox`: skip.** A little faster on prompts, slower at
-  generating, and no faster overall than the built-in backend.
-- **Halogen and DwarfStar4** exist for one model family each, at 93 GB and up.
-  They are untested here.
-
-### Measurements
-
-Qwen3.8-27B at Q4 on a Ryzen AI MAX+ 395 with 128 GB (Lemonade 2026.46.2,
-kernel 7.2.4), using `lemonade bench`. Tokens per second; higher is better.
-
-| Backend | Weights | Generating | Reading a 3K prompt | Reading a 25K prompt | First token after 25K | Peak GPU memory |
-| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
-| `gufo:rocm` | UD-Q4_K_XL | **30.8** | **585** | **559** | **44 s** | 25.0 GB |
-| `rocmfpx:rocm` | ROCmFP4 Q4_0 | 28.0 | 383 | 351 | 71 s | **20.1 GB** |
-| `llamacpp:rocm` (built in) | UD-Q4_K_XL | 23.8 | 340 | 325 | 76 s | 22.6 GB |
-| `llamacpp:vulkan` (built in) | UD-Q4_K_XL | 23.0 | 343 | 320 | 78 s | 23.4 GB |
-| `llamacpp:nathanw` | UD-Q4_K_XL | 21.0 | 344 | 412 | 60 s | 25.1 GB |
-| `llamacpp:halobox` | UD-Q4_K_XL | 20.3 | 401 | 351 | 71 s | 24.0 GB |
-
-Generating is the mean of three 256-token replies; the prompt columns are one
-run each. Every backend used the draft model its registration ships with. These
-are speeds on one model and say nothing about output quality: ROCmFP4 Q4_0 is a
-different quantization from UD-Q4_K_XL. Compare on your own models with:
-
-```fish
-lemonade bench MODEL --backend rocm --backend nathanw --scenarios chat --scenarios context-32k
-```
+For which of these to run, and how they compare with the built-in backends,
+see [Choosing a language model backend](backends.md#choosing-a-language-model-backend).
 
 ## Using one
 
@@ -150,11 +113,13 @@ This image adds three things around that:
   Set `GPU_MAX_HW_QUEUES=1` on this container; it is forwarded to container
   backends by default. Vulkan backends, `llamacpp:nathanw` included, are not
   affected.
-- **Pruning images can remove idle backends.** A backend's image is pulled by
-  digest and has no tag, so Docker lists it as dangling, and
-  `docker image prune` can remove it while no model is loaded on it. A
-  scheduled cleanup that prunes unused images does the same. `versions` reports
-  an image that has gone missing, and `install` pulls it again.
+- **Pruning images removes idle backends.** A backend's image is pulled by
+  digest and is in use only while a model is loaded on it. `docker image prune`
+  therefore removes it, and so does any scheduled cleanup of unused images,
+  such as Komodo's Auto Prune, which runs daily when it is on for the server.
+  Lemonade still lists the backend as installed, and its models fail to load.
+  Turn scheduled pruning off on the host that runs this container. `versions`
+  reports an image that has gone missing, and `install` pulls it again.
 - **Guest tier.** Lemonade classes every container backend as *guest*:
   maintained by a contributor, with no support or update guarantee. Lemonade
   pins and validates the image digests it ships; the engines themselves are
