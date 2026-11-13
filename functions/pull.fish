@@ -241,8 +241,19 @@ function __pull_registration_payload --argument-names model_json model_name draf
             auto_update: .auto_update,
             size: .size
         }
-        | if $drop == "true" then .checkpoints |= del(.draft)
-          elif $draft != "" then .checkpoints.draft = $draft
+        # Lemonade enables drafting from the label, not from the checkpoint: a
+        # draft without its label loads as a model that cannot use it.
+        | if $drop == "true" then (.checkpoints |= del(.draft)) | (.labels -= ["mtp", "dflash"])
+          elif $draft != "" then
+              ($draft | split("/") | last | split(":") | last | ascii_downcase) as $name
+              | (if ($name | startswith("mtp-")) then "mtp"
+                 elif ($name | startswith("dflash-")) or $name == "dflash.gguf" then "dflash"
+                 else null end) as $kind
+              | .checkpoints.draft = $draft
+              | if $kind == null then .
+                else .labels -= (["mtp", "dflash"] - [$kind])
+                    | if (.labels | index($kind)) then . else .labels += [$kind] end
+                end
           else . end
         | with_entries(select(.value != null))' 2>/dev/null
 end

@@ -223,8 +223,8 @@ check 'removal deletes the unreferenced blob' test ! -e "$cache/blobs/old"
 for filename in "$main_path" "$projector_path"
     check 'removal keeps the main weights and the projector' test -f "$filename"
 end
-set -l stripped (printf '%s\n' "$original" | jq -cS 'del(.checkpoints.draft)')
-check 'removal changes only the draft checkpoint' test (__pull_registration_payload "$model" user.Model '' | jq -cS .) = "$stripped"
+set -l stripped (printf '%s\n' "$original" | jq -cS 'del(.checkpoints.draft) | .labels -= ["mtp"]')
+check 'removal changes only the draft checkpoint and its label' test (__pull_registration_payload "$model" user.Model '' | jq -cS .) = "$stripped"
 
 reset_fixture
 set model (printf '%s\n' "$model" | jq -c 'del(.checkpoints.draft)')
@@ -346,6 +346,22 @@ for entry in (complete -C 'pull --mtp Model --draft ')
 end
 check '--mtp draft completion resolves a registered model' contains 'MTP/mtp-new-Q4_0.gguf' $completions
 check '--mtp draft completion includes alternative quants' contains mtp-other-Q8_0.gguf $completions
+
+# Lemonade turns drafting on from the label, so the label follows the draft.
+set -l unlabelled (jq -nc '{recipe:"llamacpp",checkpoints:{main:"org/Model:Q4_K_M"},labels:["chat","vision"]}')
+check 'adding an MTP draft adds the mtp label' test \
+    (__pull_registration_payload "$unlabelled" user.Model org/Model:MTP/mtp-Model-Q4_0.gguf | jq -c .labels) = '["chat","vision","mtp"]'
+check 'adding a DFlash draft adds the dflash label' test \
+    (__pull_registration_payload "$unlabelled" user.Model org/Draft:dflash.gguf | jq -c .labels) = '["chat","vision","dflash"]'
+set -l labelled (jq -nc '{recipe:"llamacpp",checkpoints:{main:"org/Model:Q4_K_M",draft:"org/Model:MTP/mtp-Model-Q4_0.gguf"},labels:["chat","mtp","vision"]}')
+check 'replacing a draft with the same kind keeps the labels as they were' test \
+    (__pull_registration_payload "$labelled" user.Model org/Model:MTP/mtp-Model-Q8_0.gguf | jq -c .labels) = '["chat","mtp","vision"]'
+check 'switching draft kind switches the label' test \
+    (__pull_registration_payload "$labelled" user.Model org/Draft:dflash-Model.gguf | jq -c .labels) = '["chat","vision","dflash"]'
+check 'removing the draft removes its label' test \
+    (__pull_registration_payload "$labelled" user.Model '' true | jq -c '[.labels, (.checkpoints | has("draft"))]') = '[["chat","vision"],false]'
+check 'a registration that is not being changed keeps its labels' test \
+    (__pull_registration_payload "$labelled" user.Model '' | jq -c .labels) = '["chat","mtp","vision"]'
 
 rm -rf -- "$sandbox"
 if test $failures -gt 0
